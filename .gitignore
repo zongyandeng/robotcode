@@ -1,0 +1,38 @@
+# Python 環境與快取
+.venv*/
+**/.venv*/
+__pycache__/
+*.pyc
+
+# 第三方下載、WPILib 捷徑
+downloads/
+2026 WPILib Tools/
+
+# 資料集、訓練輸出、標註審查用的大量圖片
+/data/
+/data_robotcam/
+/dataset/
+/runs/
+review/r1/
+review/r2_all104/
+review/preview/
+
+# 模型權重（太大，另外備份）
+*.pt
+*.engine
+*.onnx
+
+# 文件：只追蹤 Markdown 講稿，PDF / Word / 影片不進版控
+document/**
+!document/**/
+!document/**/*.md
+
+# 記錄檔與執行時產生的檔案
+tools/*.csv
+tools/orbbec_test/Log/
+*.log
+integration/orin/row_anchor.json
+
+# CAD 與備份檔
+*.stp
+*.bak

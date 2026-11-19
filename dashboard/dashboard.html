@@ -1,0 +1,1130 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>9427 機器人儀表板</title>
+<style>
+/* 不使用任何外部資源：比賽場地沒有網路，只用系統字型 */
+:root{
+  --bg:#0e1316; --panel:#161d22; --panel2:#1c252b; --line:#2a353d;
+  --ink:#e8eef1; --mute:#8fa0aa; --acc:#4cc3b5;
+  --ok:#43d17a; --warn:#f2b441; --bad:#ff5a52; --lit:#ff3b3b; --tgt:#ffd23f;
+  --font:"Segoe UI","Microsoft JhengHei","Noto Sans TC",system-ui,sans-serif;
+  --mono:ui-monospace,"Cascadia Mono",Consolas,monospace;
+}
+:root[data-theme="light"]{
+  --bg:#eef2f4; --panel:#fff; --panel2:#f3f6f7; --line:#d4dde2; --ink:#14212a; --mute:#5b6c77;
+  --acc:#0b7a6e; --ok:#1c8f4d; --warn:#b47a0c; --bad:#c62f27; --lit:#d9261f; --tgt:#b58900;
+}
+*{box-sizing:border-box}
+html,body{margin:0;height:100%}
+body{background:var(--bg);color:var(--ink);font:15px/1.45 var(--font);display:flex;flex-direction:column;min-height:100%}
+select{font:inherit;color:inherit;background:var(--panel2);border:1px solid var(--line);border-radius:6px;padding:4px 8px;cursor:pointer;max-width:100%}
+button,input{font:inherit;color:inherit;background:var(--panel2);border:1px solid var(--line);border-radius:6px;padding:5px 10px}
+button{cursor:pointer}button:hover{border-color:var(--acc)}
+header{flex:none;display:flex;flex-wrap:wrap;gap:10px 18px;align-items:center;padding:10px 16px;background:var(--panel);border-bottom:1px solid var(--line)}
+header h1{font-size:18px;margin:0;font-weight:700;letter-spacing:.02em}
+.pill{display:inline-flex;align-items:center;gap:7px;padding:3px 11px;border-radius:999px;background:var(--panel2);border:1px solid var(--line);font-size:13.5px;white-space:nowrap}
+.dot{width:10px;height:10px;border-radius:50%;background:var(--mute)}
+.dot.ok{background:var(--ok)}.dot.warn{background:var(--warn)}.dot.bad{background:var(--bad)}
+.sp{flex:1}
+.mono{font-family:var(--mono);font-variant-numeric:tabular-nums}
+#alerts{flex:none;display:flex;flex-wrap:wrap;gap:8px;padding:8px 16px;min-height:6px}
+.alert{padding:3px 10px;border-radius:6px;font-size:13.5px;border:1px solid}
+.alert.bad{color:var(--bad);border-color:var(--bad);background:color-mix(in srgb,var(--bad) 12%,transparent)}
+.alert.warn{color:var(--warn);border-color:var(--warn);background:color-mix(in srgb,var(--warn) 12%,transparent)}
+main{flex:1;min-height:0;display:grid;gap:10px;padding:0 12px 10px;grid-template-columns:minmax(0,1.5fr) minmax(0,1fr) minmax(0,.9fr);align-items:stretch}
+main[hidden]{display:none}
+#pageTune{grid-template-columns:minmax(0,1fr);align-items:start;overflow:auto}
+.col{display:flex;flex-direction:column;gap:10px;min-width:0;min-height:0}
+.col>.card{flex:none;overflow:hidden}
+.col>.card.grow{flex:1 1 0;min-height:0;display:flex;flex-direction:column}
+#pageTune .col>.card{overflow:visible}
+.tabs{display:inline-flex;gap:4px}
+.tabs button.on{border-color:var(--acc);background:color-mix(in srgb,var(--acc) 22%,transparent);font-weight:600}
+@media(min-width:1001px){body{height:100vh;overflow:hidden}}
+@media(max-width:1000px){main{grid-template-columns:minmax(0,1fr);overflow:visible;flex:none}
+  .col>.card.grow{flex:none;overflow:visible!important}#cam{width:100%;max-height:none}#field{flex:none!important;max-width:330px;height:auto!important}}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:8px 12px;min-width:0}
+.card h2{margin:0 0 5px;font-size:13px;font-weight:600;color:var(--mute);letter-spacing:.06em;text-transform:uppercase;display:flex;align-items:center;gap:8px}
+.card h2 .r{margin-left:auto;text-transform:none;letter-spacing:0;font-weight:400}
+/* 相機 */
+#cam{position:relative;background:#000;border-radius:8px;overflow:hidden;aspect-ratio:4/3;width:auto;max-width:100%;max-height:46vh;margin:0 auto;display:grid;place-items:center}
+#camimg{width:100%;height:100%;object-fit:contain;display:none}
+#camph{color:var(--mute);text-align:center;padding:20px;max-width:46ch}
+#camhud{position:absolute;left:8px;top:8px;display:flex;flex-wrap:wrap;gap:6px}
+#camhud .pill{background:rgba(0,0,0,.6);border-color:#ffffff30;color:#fff;font-size:12.5px}
+.camctl{display:flex;gap:8px;margin-top:8px;flex-wrap:wrap}
+.camctl input{flex:1;min-width:220px}
+/* 發射條件 */
+.ready{display:flex;gap:10px;flex-wrap:wrap}
+.chip{flex:1;min-width:92px;text-align:center;padding:8px 6px;border-radius:8px;border:1px solid var(--line);background:var(--panel2);font-weight:600}
+.chip small{display:block;font-weight:400;color:var(--mute);font-size:12px}
+.chip.ok{border-color:var(--ok);color:var(--ok)}.chip.bad{border-color:var(--bad);color:var(--bad)}.chip.na{opacity:.6}
+.big{font:700 24px/1.1 var(--mono)}
+.kv{display:grid;grid-template-columns:auto 1fr;gap:3px 12px;font-size:14px}
+.kv span:nth-child(odd){color:var(--mute)}
+.bar{position:relative;height:16px;background:var(--panel2);border:1px solid var(--line);border-radius:5px;overflow:hidden}
+.bar i{position:absolute;left:0;top:0;bottom:0;background:var(--acc);transition:width .12s}
+.bar b{position:absolute;top:-2px;bottom:-2px;width:3px;background:var(--tgt);transform:translateX(-1px)}
+.row{display:grid;grid-template-columns:44px 1fr 124px;gap:8px;align-items:center;margin:5px 0;font-size:14px}
+.row .mono{text-align:right;white-space:nowrap}
+/* 板子地圖 */
+#board{display:grid;grid-template-columns:repeat(3,1fr);gap:6px;width:min(100%,30vh);max-width:240px;flex:none;align-self:start}
+.boardrow{display:flex;gap:14px;align-items:flex-start;flex-wrap:wrap}.boardside{flex:1 1 220px;min-width:0}.boardside .legend{margin-top:0}
+.hole{aspect-ratio:1;border-radius:50%;border:2px solid var(--line);background:var(--panel2);display:grid;place-items:center;text-align:center;font-size:11.5px;line-height:1.2;color:var(--mute);position:relative}
+.hole.small{width:62%;justify-self:center;font-size:10.5px}
+.hole.seen{border-color:var(--acc);color:var(--ink)}
+.hole.lit{border-color:var(--lit);box-shadow:0 0 14px var(--lit);color:#fff}
+.hole.target::after{content:"";position:absolute;inset:-6px;border:3px solid var(--tgt);border-radius:50%}
+.hole{cursor:pointer}.hole:hover{border-color:var(--tgt)}
+.hole.aimsel{background:color-mix(in srgb,var(--ok) 22%,var(--panel2));border-color:var(--ok);color:var(--ink);font-weight:700}
+.aimbar{display:flex;gap:6px;align-items:center;flex-wrap:wrap;margin-top:6px;font-size:13px}
+.aimbar #aimStatus{color:var(--mute)}
+.legend{display:flex;gap:12px;flex-wrap:wrap;font-size:12.5px;color:var(--mute);margin-top:8px}
+.tune{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:14px}
+.tl{font-size:12.5px;color:var(--mute);margin-bottom:5px}.tsub{font-size:12.5px;color:var(--mute);margin-top:4px}
+.trow{display:flex;gap:6px;align-items:center;flex-wrap:wrap}
+#tuneHoles{display:grid;grid-template-columns:repeat(3,44px);gap:5px}
+#tuneHoles button{padding:4px 0}#tuneHoles button.on{border-color:var(--tgt);background:color-mix(in srgb,var(--tgt) 25%,transparent);font-weight:700}
+button.hit{border-color:var(--ok);color:var(--ok);font-weight:700;padding:8px 18px}button.miss{border-color:var(--bad);color:var(--bad);font-weight:700;padding:8px 18px}
+table.tlog{width:100%;border-collapse:collapse;font-size:12.5px}table.tlog td,table.tlog th{padding:3px 6px;border-bottom:1px solid var(--line);text-align:right}
+button.side.on,button.strat.on{border-color:var(--acc);background:color-mix(in srgb,var(--acc) 22%,transparent);color:var(--ink);font-weight:600}
+.legend i{display:inline-block;width:10px;height:10px;border-radius:50%;margin-right:5px;vertical-align:-1px;border:2px solid}
+svg text{fill:var(--ink)}
+.gauge{width:100%;max-width:260px;display:block;margin:0 auto}
+footer{flex:none;padding:8px 16px;color:var(--mute);font-size:12.5px;border-top:1px solid var(--line)}
+.two{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+@media(max-width:560px){.two{grid-template-columns:1fr}}
+#fireGlow{position:fixed;inset:0;pointer-events:none;z-index:50;opacity:0;transition:opacity .15s;box-shadow:inset 0 0 0 6px var(--ok),inset 0 0 60px 14px color-mix(in srgb,var(--ok) 70%,transparent)}
+#fireGlow.on{opacity:1;animation:fireBlink .5s ease-in-out infinite alternate}
+@keyframes fireBlink{from{filter:brightness(.7)}to{filter:brightness(1.4)}}
+</style>
+</head>
+<body>
+<div id="fireGlow"></div>
+<header>
+  <h1>9427 機器人儀表板</h1>
+  <span class="pill"><span class="dot" id="dConn"></span><span id="tConn">未連線</span></span>
+  <span class="pill"><span class="dot" id="dEn"></span><span id="tMode" class="mono">—</span></span>
+  <span class="pill">電池 <b class="mono" id="tBat">—</b></span>
+  <span class="pill">比賽時間 <b class="mono" id="tTime">—</b></span>
+  <span class="sp"></span>
+  <label class="pill">roboRIO <input id="host" size="14" value="10.94.27.2" spellcheck="false" style="padding:1px 6px;border:0;background:transparent"></label>
+  <span class="tabs"><button id="tabMain" class="on">即時儀表板</button><button id="tabTune">ShotTable 工具</button></span>
+  <button id="bTheme">深／淺色</button>
+</header>
+<div id="alerts"></div>
+
+<main id="pageMain">
+  <div class="col">
+    <section class="card">
+      <h2>相機畫面 <span class="r mono" id="camState">—</span></h2>
+      <div id="cam">
+        <img id="camimg" alt="Orin 視覺相機畫面">
+        <div id="camph">尚未連線相機。<br>在下方填入 Orin 的串流網址（vision_node.py 的 <span class="mono">--mjpeg-port</span>），例如<br><span class="mono">http://10.94.27.12:1181/stream.mjpg</span></div>
+        <div id="camhud"></div>
+      </div>
+      <div class="camctl">
+        <input id="camurl" placeholder="http://Orin的IP:1181/stream.mjpg" spellcheck="false">
+        <button id="bCam">連線</button>
+      </div>
+    </section>
+    <section class="card grow" style="overflow:auto">
+      <h2>板子與目標 <span class="r mono" id="boardInfo">—</span></h2>
+      <div class="boardrow">
+        <div id="board"></div>
+        <div class="boardside">
+          <div class="legend"><span><i style="border-color:var(--acc)"></i>有看到</span><span><i style="border-color:var(--lit)"></i>亮燈</span><span><i style="border-color:var(--tgt)"></i>射擊目標</span><span><i style="border-color:var(--ok)"></i>點選瞄準中</span></div>
+          <div class="aimbar"><button id="aimStop">停止瞄準</button><span id="aimStatus" class="mono">點孔：底盤與仰角自動對準（不發射）</span></div>
+          <div class="aimbar"><span>球的落點</span>
+            <button data-bias="yaw:0.5">偏左</button><button data-bias="yaw:-0.5">偏右</button>
+            <button data-bias="elev:0.5">偏低</button><button data-bias="elev:-0.5">偏高</button></div>
+          <div class="aimbar mono" id="biasInfo">—</div>
+          <div class="kv" id="visKv" style="margin-top:6px"></div>
+        </div>
+      </div>
+    </section>
+  </div>
+  <div class="col">
+    <section class="card grow">
+      <h2>場地 <span class="r mono" id="fieldInfo">—</span></h2>
+      <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:6px">
+        <span style="color:var(--mute);font-size:13px">自主起始位置</span>
+        <select id="sideSel"><option value="">（機器人未回報）</option>
+          <option value="左起始框">左起始框（靠右上角）</option>
+          <option value="右起始框">右起始框（靠左上角）</option></select>
+        <span class="mono" id="sideState" style="font-size:12.5px;color:var(--mute)">—</span>
+      </div>
+      <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:6px">
+        <span style="color:var(--mute);font-size:13px">射擊策略</span>
+        <select id="stratSel"><option value="">（機器人未回報）</option>
+          <option value="上半場 27 顆（放棄紅燈格）" title="每個大孔 3 顆，共 27 顆，不打紅燈格">上半場 27 顆</option>
+          <option value="下半場 9 顆 每孔 1 顆（剩下手動補）" title="9 孔各 1 顆湊齊連線（共 9 顆），剩下的球手動補；不打紅燈格">下半場 每孔 1 顆</option>
+          <option value="下半場 18 顆 紅燈格 + 連線" title="先打紅燈格 2 顆（各 4 分），再連線優先；需要小孔排 ShotTable 量好">下半場 紅燈＋連線</option></select>
+        <span class="mono" id="stratState" style="font-size:12.5px;color:var(--mute)">—</span>
+      </div>
+      <svg id="field" viewBox="0 0 295 525" style="display:block;margin:0 auto;width:100%;flex:1 1 0;min-height:0"></svg>
+      <div class="legend"><span><i style="border-color:var(--acc);background:var(--acc)"></i>機器人／鎖定的孔</span><span><i style="border-color:var(--mute)"></i>規則書板位</span><span><i style="border-color:var(--tgt)"></i>目前目標</span><span>虛線 = 發射方向</span></div>
+      <div class="kv" style="margin-top:6px" id="fieldKv"></div>
+    </section>
+    <section class="card">
+      <h2>送球機構</h2>
+      <div class="kv" id="feedKv"></div>
+    </section>
+  </div>
+  <div class="col">
+    <section class="card">
+      <h2>自主射擊 <span class="r mono" id="autoText">—</span></h2>
+      <div class="bar"><i id="ballBar" style="width:0"></i></div>
+      <div class="kv" style="margin-top:8px" id="autoKv"></div>
+    </section>
+    <section class="card">
+      <h2>發射輪 <span class="r mono" id="shAt">—</span></h2>
+      <div class="row"><span>上輪</span><div class="bar"><i id="shTopBar"></i><b id="shTopTgt"></b></div><span class="mono" id="shTopTxt">—</span></div>
+      <div class="row"><span>下輪</span><div class="bar"><i id="shBotBar"></i><b id="shBotTgt"></b></div><span class="mono" id="shBotTxt">—</span></div>
+      <div class="legend"><span>黃線 = 目標轉速，數字為 RPM（RPS×60）</span></div>
+    </section>
+    <section class="card"><h2>仰角 <span class="r mono" id="hoAt">—</span></h2>
+      <svg class="gauge" viewBox="0 0 260 160" id="gHood" style="max-width:320px;max-height:95px;margin:0 auto;display:block"></svg><div class="big" style="text-align:center" id="hoTxt">—</div></section>
+    <section class="card">
+      <h2>發射條件 <span class="r" id="readyText"></span></h2>
+      <div class="ready">
+        <div class="chip na" id="cShooter">發射輪<small>—</small></div>
+        <div class="chip na" id="cHood">仰角<small>—</small></div>
+        <div class="chip na" id="cVision">視覺<small>—</small></div>
+      </div>
+    </section>
+  </div>
+</main>
+<main id="pageTune" hidden>
+  <div class="col" style="grid-column:1/-1">
+    <section class="card" id="holeCard">
+      <h2>各孔定位數據表 <span class="r mono" id="holeInfo">填好會自動存在這個瀏覽器</span></h2>
+      <div class="tsub" style="margin:0 0 6px">定位好之後，每個孔填：左右角度、仰角、轉速。「帶入」會抓目前的視覺角度／距離、仰角實際值、轉速設定值，之後都可以手動改。</div>
+      <div class="trow" style="margin-bottom:8px"><span>目前孔</span>
+        <select id="holeSel"><option value="0">0</option><option value="1">1</option><option value="2">2</option><option value="3">3</option><option value="4">4</option><option value="5">5</option><option value="6">6</option><option value="7">7</option><option value="8">8</option><option value="9">9</option><option value="10">10</option><option value="11">11</option></select>
+        <button id="holeAimStop">停止瞄準</button>
+        <span class="mono tsub" style="margin:0" id="holeAimInfo">選孔後底盤與仰角會自動對準（不發射，要機器人啟用）</span>
+        <button id="holeRec" class="hit" style="padding:8px 22px">記錄到此孔</button>
+        <span class="mono tsub" style="margin:0" id="holeRecInfo">測好之後按這顆：自動記下目前的左右角度、仰角、轉速、距離</span></div>
+      <div class="trow" style="margin-bottom:6px">
+        <label class="tsub" style="margin:0">自動射擊使用此表（1 = 用、0 = 用程式內建值）<input data-tkey="Tune/Hole Table Enabled" type="number" step="1" style="width:3.5em"></label>
+        <label class="tsub" style="margin:0">所有孔仰角再加 ° <input data-tnum="Tune/Hood Offset deg" type="number" step="0.5" style="width:4em"></label>
+        <span class="mono tsub" style="margin:0" id="holeSrc">左右角度、仰角、轉速一改就即時送到機器人，不用重新編譯；空白的格子用程式內建值</span></div>
+      <div style="overflow:auto"><table class="tlog holetbl" id="holeTbl"></table></div>
+      <div class="trow" style="margin-top:8px"><button id="holeCopy">複製表格（貼給 Claude）</button><button id="holeCsv">下載 CSV</button><button id="holeClear">全部清除</button></div>
+    </section>
+
+    <section class="card" id="tuneCard">
+      <h2>ShotTable 填表工具 <span class="r mono" id="tuneInfo">—</span></h2>
+      <div class="tune">
+        <div>
+          <div class="tl">1. 目標孔（點選）</div>
+          <div id="tuneHoles"></div>
+          <div class="mono" id="tuneDist" style="margin-top:6px">—</div>
+        </div>
+        <div>
+          <div class="tl">2. 發射輪轉速（RT 按住時生效）</div>
+          <div class="trow"><button data-rps="-5">−5</button><button data-rps="-1">−1</button>
+            <input id="tuneRps" type="number" step="1" min="0" max="110" style="width:5.5em"><span>RPS</span>
+            <button data-rps="1">+1</button><button data-rps="5">+5</button></div>
+          <div class="trow" style="margin-top:6px"><span class="tsub" style="margin:0">差速</span>
+            <button data-spin="-0.01">−0.01</button>
+            <input id="tuneSpin" type="number" step="0.01" min="0" max="0.3" style="width:5em">
+            <button data-spin="0.01">+0.01</button></div>
+          <div class="mono tsub" id="tuneRpsNow">—</div>
+          <div class="mono tsub" id="tuneSpinNow">—</div>
+          <div class="tl" style="margin-top:10px">3. 仰角（輸入後按 Enter；十字鍵上下每次 1°）</div>
+          <div class="trow"><button data-hood="-1">−1°</button>
+            <input id="tuneHood" type="number" step="0.5" min="0" max="40" style="width:5.5em"><span>°</span>
+            <button data-hood="1">+1°</button></div>
+          <div class="mono tsub" id="tuneHoodNow">—</div>
+          <div class="tl" style="margin-top:10px">仰角 PID（改了按 Enter，即時套用；開機會回到程式裡的值）</div>
+          <div class="trow" id="hoodPid">
+            <label class="tsub" style="margin:0">kP <input data-gain="kP" type="number" step="10" style="width:4.5em"></label>
+            <label class="tsub" style="margin:0">kI <input data-gain="kI" type="number" step="10" style="width:4.5em"></label>
+            <label class="tsub" style="margin:0">kD <input data-gain="kD" type="number" step="1" style="width:4em"></label>
+            <label class="tsub" style="margin:0">kS <input data-gain="kS" type="number" step="0.05" style="width:4em"></label>
+            <label class="tsub" style="margin:0">kG <input data-gain="kG" type="number" step="0.05" style="width:4em"></label>
+          </div>
+          <div class="mono tsub" id="hoodErrNow">—</div>
+          <div class="tl" style="margin-top:10px">送球前晃底盤（改了按 Enter，即時套用；開機會回到程式裡的值）</div>
+          <div class="trow" id="shakeTune">
+            <label class="tsub" style="margin:0">啟用 <input data-shake="Enabled" type="number" step="1" min="0" max="1" style="width:3.5em"></label>
+            <label class="tsub" style="margin:0">角度° <input data-shake="Deg" type="number" step="1" min="0" max="30" style="width:4em"></label>
+            <label class="tsub" style="margin:0">加速度 <input data-shake="Alpha" type="number" step="1" min="0.5" max="30" style="width:4em"></label>
+            <label class="tsub" style="margin:0">最高轉速 <input data-shake="Max Omega" type="number" step="0.1" min="0.2" max="5" style="width:4em"></label>
+            <label class="tsub" style="margin:0">增益 <input data-shake="Kp" type="number" step="0.5" min="0" max="20" style="width:4em"></label>
+          </div>
+          <div class="mono tsub" id="shakeNow">—</div>
+          <div class="trow" style="margin-top:4px"><button id="shakeNowBtn">立即晃一次</button>
+            <span class="tsub" style="margin:0" id="shakeBtnInfo">（手把十字鍵「左」也可以；機器人要啟用中）</span></div>
+          <div class="tl" style="margin-top:10px">分球盤 Feeder（改了按 Enter，即時套用；開機會回到程式裡的值）</div>
+          <div class="trow" id="feederTune">
+            <label class="tsub" style="margin:0">kP <input data-feeder="kP" type="number" step="5" style="width:4em"></label>
+            <label class="tsub" style="margin:0">轉速 <input data-feeder="Cruise" type="number" step="0.5" style="width:4em"></label>
+            <label class="tsub" style="margin:0">加速度 <input data-feeder="Accel" type="number" step="1" style="width:4em"></label>
+            <label class="tsub" style="margin:0">卡球電流A <input data-feeder="Jam Amps" type="number" step="1" style="width:4em"></label>
+            <label class="tsub" style="margin:0">轉不動秒 <input data-feeder="Stall Sec" type="number" step="0.05" style="width:4em"></label>
+            <label class="tsub" style="margin:0">起步不判秒 <input data-feeder="Grace Sec" type="number" step="0.05" style="width:4em"></label>
+            <label class="tsub" style="margin:0">反轉重試 <input data-feeder="Retries" type="number" step="1" style="width:3.5em"></label>
+            <label class="tsub" style="margin:0">硬推電壓 V <input data-feeder="Fwd Volts" type="number" step="0.5" style="width:4em"></label>
+            <label class="tsub" style="margin:0">硬推秒 <input data-feeder="Fwd Sec" type="number" step="0.1" style="width:4em"></label>
+            <label class="tsub" style="margin:0">反轉角度° <input data-feeder="Rev Deg" type="number" step="5" style="width:4em"></label>
+          </div>
+          <div class="mono tsub" id="feederNow">—</div>
+          <div class="tl" style="margin-top:10px">送球偵測 Orbit ID57 電流（送球中電流比空轉高不到門檻 = 空轉，不算一發，從晃底盤重來）</div>
+          <div class="trow">
+            <label class="tsub" style="margin:0">啟用 1/0 <input data-orbit="Detect Enabled" type="number" step="1" style="width:3.5em"></label>
+            <label class="tsub" style="margin:0">比空轉高 A <input data-orbit="Rise Amps" type="number" step="0.5" style="width:4em"></label>
+          </div>
+          <div class="tl" style="margin-top:10px">影像修正開關（1 = 開、0 = 關；改了按 Enter）</div>
+          <div class="trow">
+            <label class="tsub" style="margin:0">影像修正仰角 <input data-tkey="Tune/Live Elev Enabled" type="number" step="1" style="width:3.5em"></label>
+            <label class="tsub" style="margin:0">守點 <input data-tkey="Tune/Hold Enabled" type="number" step="1" style="width:3.5em"></label>
+            <label class="tsub" style="margin:0">送球打叉 <input data-tkey="Tune/XLock Enabled" type="number" step="1" style="width:3.5em"></label>
+          </div>
+          <div class="mono tsub" id="orbitNow">—</div>
+        </div>
+        <div>
+          <div class="tl">4. 射完一發，記錄結果</div>
+          <div class="trow"><button class="hit" id="logHit">進 ✓</button><button class="miss" id="logMiss">沒進 ✗</button></div>
+          <div class="trow" style="margin-top:6px"><button id="logUndo">刪除最後一筆</button><button id="logClear">全部清除</button></div>
+          <div class="mono tsub" id="logCount">—</div>
+        </div>
+      </div>
+      <details style="margin-top:10px"><summary style="cursor:pointer;color:var(--mute)">紀錄明細</summary>
+        <div style="max-height:220px;overflow:auto"><table class="tlog" id="logTable"></table></div></details>
+      <details style="margin-top:6px" open><summary style="cursor:pointer;color:var(--mute)">產生 ShotTable 程式碼（貼進 ShotTable.java 的 static 區塊）</summary>
+        <textarea id="logJava" readonly spellcheck="false" style="width:100%;height:150px;margin-top:6px;font:12.5px ui-monospace,Consolas,monospace;background:var(--panel2);color:var(--ink);border:1px solid var(--line);border-radius:6px"></textarea>
+        <div class="trow"><button id="logCopy">複製程式碼</button><button id="logCsv">下載 CSV</button></div>
+      </details>
+    </section>
+  </div>
+</main>
+<footer>資料來源：roboRIO 的 NetworkTables（SmartDashboard／Vision 表），瀏覽器直接連 ws://roboRIO:5810。要換 roboRIO 位址請改右上角欄位。</footer>
+
+<script>
+"use strict";
+const $ = id => document.getElementById(id);
+const LS = {
+  get(k, d){ try{ return localStorage.getItem(k) ?? d }catch(e){ return d } },
+  set(k, v){ try{ localStorage.setItem(k, v) }catch(e){} }
+};
+
+/* ---------------------------------------------------------------- msgpack（只實作 NT4 會用到的型別） */
+/* 編碼：只做發布字串與對時需要的型別（字串、整數、陣列） */
+function mpEncode(v, out = []){
+  if(v && typeof v === "object" && "f64" in v){            // 強制用 float64（NT 的 double topic）
+    const dv = new DataView(new ArrayBuffer(9)); dv.setUint8(0, 0xcb); dv.setFloat64(1, v.f64);
+    for(const x of new Uint8Array(dv.buffer)) out.push(x);
+  }else if(typeof v === "string"){
+    const b = new TextEncoder().encode(v);
+    if(b.length < 32) out.push(0xa0 | b.length); else if(b.length < 256) out.push(0xd9, b.length); else out.push(0xda, b.length >> 8, b.length & 255);
+    for(const x of b) out.push(x);
+  }else if(Array.isArray(v)){
+    out.push(0x90 | v.length); for(const x of v) mpEncode(x, out);
+  }else if(Number.isInteger(v)){
+    if(v >= 0 && v < 128) out.push(v);
+    else if(v < 0 && v >= -32) out.push(v & 0xff);
+    else { const dv = new DataView(new ArrayBuffer(9)); dv.setUint8(0, 0xd3); dv.setBigInt64(1, BigInt(v)); for(const x of new Uint8Array(dv.buffer)) out.push(x) }
+  }
+  return out;
+}
+function mpDecodeAll(buf){
+  const dv = new DataView(buf), u8 = new Uint8Array(buf); let p = 0;
+  const td = new TextDecoder();
+  function rd(){
+    const t = u8[p++];
+    if(t <= 0x7f) return t;
+    if(t >= 0xe0) return t - 256;
+    if((t & 0xf0) === 0x90) return arr(t & 0x0f);
+    if((t & 0xf0) === 0x80) return map(t & 0x0f);
+    if((t & 0xe0) === 0xa0) return str(t & 0x1f);
+    switch(t){
+      case 0xc0: return null; case 0xc2: return false; case 0xc3: return true;
+      case 0xca: { const v = dv.getFloat32(p); p += 4; return v }
+      case 0xcb: { const v = dv.getFloat64(p); p += 8; return v }
+      case 0xcc: return u8[p++];
+      case 0xcd: { const v = dv.getUint16(p); p += 2; return v }
+      case 0xce: { const v = dv.getUint32(p); p += 4; return v }
+      case 0xcf: { const v = Number(dv.getBigUint64(p)); p += 8; return v }
+      case 0xd0: return dv.getInt8(p++);
+      case 0xd1: { const v = dv.getInt16(p); p += 2; return v }
+      case 0xd2: { const v = dv.getInt32(p); p += 4; return v }
+      case 0xd3: { const v = Number(dv.getBigInt64(p)); p += 8; return v }
+      case 0xd9: { const n = u8[p++]; return str(n) }
+      case 0xda: { const n = dv.getUint16(p); p += 2; return str(n) }
+      case 0xdb: { const n = dv.getUint32(p); p += 4; return str(n) }
+      case 0xc4: { const n = u8[p++]; const v = u8.slice(p, p + n); p += n; return v }
+      case 0xc5: { const n = dv.getUint16(p); p += 2; const v = u8.slice(p, p + n); p += n; return v }
+      case 0xdc: { const n = dv.getUint16(p); p += 2; return arr(n) }
+      case 0xdd: { const n = dv.getUint32(p); p += 4; return arr(n) }
+      case 0xde: { const n = dv.getUint16(p); p += 2; return map(n) }
+      default: throw new Error("msgpack type 0x" + t.toString(16));
+    }
+  }
+  function str(n){ const s = td.decode(u8.subarray(p, p + n)); p += n; return s }
+  function arr(n){ const a = new Array(n); for(let i = 0; i < n; i++) a[i] = rd(); return a }
+  function map(n){ const o = {}; for(let i = 0; i < n; i++){ const k = rd(); o[k] = rd() } return o }
+  const out = [];
+  while(p < u8.length) out.push(rd());
+  return out;
+}
+
+/* ---------------------------------------------------------------- NT4 client */
+const NT = {
+  ws: null, topics: {}, values: {}, stamp: {}, connected: false, host: "",
+  // 發布（儀表板 -> 機器人）：先跟伺服器對時，送出的值要帶伺服器時間，否則可能被當成舊值丟掉
+  pubs: {}, pending: {}, offsetUs: 0, synced: false,
+  nowUs(){ return Math.round(performance.now() * 1000) },
+  sendBin(arr){ if(this.ws && this.connected) this.ws.send(new Uint8Array(mpEncode(arr)).buffer) },
+  /** 發布值（字串或 double）。斷線重連後會自動重送最後的值。 */
+  set(name, type, value){
+    if(!(name in this.pubs)){
+      this.pubs[name] = { uid: Object.keys(this.pubs).length + 1, type };
+      if(this.connected) this.ws.send(JSON.stringify([{method: "publish", params: {name, pubuid: this.pubs[name].uid, type, properties: {}}}]));
+    }
+    this.pending[name] = value; this.flush();
+  },
+  setString(name, value){ this.set(name, "string", value) },
+  setNumber(name, value){ this.set(name, "double", Number(value)) },
+  flush(){
+    if(!this.connected || !this.synced) return;
+    for(const [name, value] of Object.entries(this.pending)){
+      const p = this.pubs[name];
+      const tid = p.type === "double" ? 1 : 4;
+      this.sendBin([p.uid, this.nowUs() + this.offsetUs, tid, p.type === "double" ? {f64: value} : value]);
+      // NT4 伺服器不會把自己送出的值回傳給自己：本地也更新一份，畫面與紀錄才會是剛設定的值
+      this.values[name] = value; this.stamp[name] = performance.now();
+      this.last = this.last || {}; this.last[name] = value;
+    }
+    this.pending = {};
+  },
+  open(host){
+    this.close(); this.host = host;
+    let ws;
+    try{ ws = new WebSocket(`ws://${host}:5810/nt/dashboard`, ["v4.1.networktables.first.wpi.edu", "networktables.first.wpi.edu"]) }
+    catch(e){ return }
+    ws.binaryType = "arraybuffer"; this.ws = ws;
+    ws.onopen = () => {
+      this.connected = true; this.topics = {}; this.synced = false;
+      ws.send(JSON.stringify([{method: "subscribe", params: {topics: ["/SmartDashboard/", "/Vision/", "/Robot/", "/Pose/"], subuid: 1, options: {prefix: true}}}]));
+      const pubs = Object.entries(this.pubs).map(([name, p]) => ({method: "publish", params: {name, pubuid: p.uid, type: p.type, properties: {}}}));
+      if(pubs.length) ws.send(JSON.stringify(pubs));
+      for(const [name, value] of Object.entries(this.last || {})) if(!(name in this.pending)) this.pending[name] = value;   // 重連後重送
+      this.sendBin([-1, 0, 2, this.nowUs()]);                                                                              // 對時
+    };
+    ws.onmessage = ev => {
+      if(typeof ev.data === "string"){
+        for(const m of JSON.parse(ev.data)){
+          if(m.method === "announce") this.topics[m.params.id] = m.params.name;
+          else if(m.method === "unannounce") delete this.topics[m.params.id];
+        }
+      }else{
+        let items; try{ items = mpDecodeAll(ev.data) }catch(e){ return }
+        const now = performance.now();
+        for(const it of items){
+          if(!Array.isArray(it) || it.length < 4) continue;
+          if(it[0] === -1){                                   // 對時回覆：[−1, 伺服器時間, 型別, 我們送出的本機時間]
+            const now = this.nowUs(); this.offsetUs = Math.round(it[1] + (now - it[3]) / 2 - now);
+            if(!this.synced){ this.synced = true; this.flush() }
+            continue;
+          }
+          const name = this.topics[it[0]]; if(!name) continue;
+          this.values[name] = it[3]; this.stamp[name] = now;
+        }
+      }
+    };
+    ws.onclose = () => { if(this.ws === ws){ this.connected = false } };
+    ws.onerror = () => {};
+  },
+  close(){ if(this.ws){ try{ this.ws.onclose = null; this.ws.close() }catch(e){} } this.ws = null; this.connected = false },
+  sd(k){ return this.values["/SmartDashboard/" + k] },
+  v(k){ return this.values["/Vision/" + k] },
+  r(k){ return this.values["/Robot/" + k] },
+  age(name){ return name in this.stamp ? (performance.now() - this.stamp[name]) / 1000 : Infinity }
+};
+
+/* ---------------------------------------------------------------- 場地平面圖
+   座標 = 機器人程式的場地座標（Constants.AutoConstants）：原點 = 作業區後緣中心，+X 朝九宮格，+Y 朝左，公尺。
+   畫面：比賽視角，九宮格在上方（+X 往上、+Y 往左）。作業區 5 x 4 m，起始框 1.2 x 0.7 m 貼在後方兩角，檔板 X=5.0，板面 X=7.5（規則書尺寸）。 */
+const FIELD = { xMax: 8.0, yMax: 2.3, s: 64, boardX: 7.5, shootX: 3.5, camF: 0.14, camL: 0.17, colM: 0.90,
+                startX: 0.93, startAbsY: 1.57,
+                camYaw: 90 };   // 相機朝向 = 底盤程式車頭 + 90 度（同 VisionConstants.kCameraYawOffsetDeg）   // 起始位置 = 起始框靠中線的前角（同 Constants.AutoConstants）
+const SIDE_TOPIC = "/SmartDashboard/Auto/Start Side/selected";
+$("sideSel").addEventListener("change", e => {
+  const v = e.target.value; if(!v) return;
+  if(!NT.connected){ $("sideState").textContent = "沒連上機器人，無法設定"; return }
+  NT.setString(SIDE_TOPIC, v);
+  $("sideState").textContent = "已送出：" + v;
+});
+const STRAT_TOPIC = "/SmartDashboard/Auto/Strategy/selected";
+$("stratSel").addEventListener("change", e => {
+  const v = e.target.value; if(!v) return;
+  if(!NT.connected){ $("stratState").textContent = "沒連上機器人，無法設定"; return }
+  NT.setString(STRAT_TOPIC, v);
+  stratSent = { v, t: performance.now() };
+  $("stratState").textContent = "已送出：" + e.target.selectedOptions[0].textContent;
+});
+// 選項清單改用機器人回報的 options（Auto/Strategy/options），名稱一定對得上；機器人沒回報時才用 HTML 內建的清單
+let stratSent = null, stratOptsKey = "";
+function syncStratOptions(){
+  const opts = NT.sd("Auto/Strategy/options");
+  if(!Array.isArray(opts) || !opts.length) return;
+  const key = opts.join("|");
+  if(key === stratOptsKey || document.activeElement === $("stratSel")) return;
+  stratOptsKey = key;
+  const sel = $("stratSel");
+  sel.innerHTML = "";
+  for(const o of opts){ const el = document.createElement("option"); el.value = o; el.textContent = o; sel.appendChild(el) }
+}
+function syncSel(el, v){ if(document.activeElement !== el) el.value = [...el.options].some(o => o.value === v) ? v : "" }
+// 畫面方向 = 比賽視角：九宮格在上方，+X（朝九宮格）往上、+Y（左）往左
+const PX = (x, y) => [(FIELD.yMax - y) * FIELD.s, (FIELD.xMax - x) * FIELD.s];
+const PS = (x, y) => PX(x, y).map(v => v.toFixed(1)).join(",");
+function fRect(x1, y1, x2, y2, extra){                    // 場地上的長方形 X x1~x2、Y y1~y2
+  const [l, t] = PX(x2, y2);
+  return `<rect x="${l}" y="${t}" width="${(y2 - y1) * FIELD.s}" height="${(x2 - x1) * FIELD.s}" ${extra}/>`;
+}
+function fLine(a, b, extra){ const [x1, y1] = PX(...a), [x2, y2] = PX(...b); return `<line x1="${x1}" y1="${y1}" x2="${x2}" y2="${y2}" ${extra}/>` }
+function fText(x, y, txt, extra = ""){ const [px, py] = PX(x, y); return `<text x="${px}" y="${py}" font-size="12" ${extra}>${txt}</text>` }
+function drawFieldStatic(){
+  let s = "";
+  s += fRect(0, -2, 5, 2, `fill="var(--panel2)" stroke="var(--line)" stroke-width="2"`);                    // 作業區
+  s += fRect(5, -2, FIELD.boardX, 2, `fill="none" stroke="var(--line)" stroke-width="1.5" stroke-dasharray="6 5"`); // 得分區
+  s += fLine([5, 2], [5, -2], `stroke="var(--mute)" stroke-width="4"`);                                     // 檔板
+  s += fText(5.12, -1.98, "檔板", `text-anchor="end" style="fill:var(--mute)"`);
+  for(const side of [1, -1]){                                                                              // 起始框
+    s += fRect(0, side > 0 ? 1.3 : -2, 1.2, side > 0 ? 2 : -1.3, `fill="none" stroke="var(--mute)" stroke-width="1.5"`);
+    s += fText(-0.17, side > 0 ? 1.98 : -1.32, `${side > 0 ? "左" : "右"}起始框`, `font-size="11" style="fill:var(--mute)"`);
+  }
+  const [sx, sy] = PX(FIELD.shootX, 0);                                                                    // 射擊點
+  s += `<path d="M ${sx - 8} ${sy} H ${sx + 8} M ${sx} ${sy - 8} V ${sy + 8}" stroke="var(--tgt)" stroke-width="2"/>`;
+  s += `<text x="${sx + 10}" y="${sy + 4}" font-size="11" style="fill:var(--tgt)">射擊點</text>`;
+  s += fLine([FIELD.boardX, 1.3], [FIELD.boardX, -1.3], `stroke="var(--mute)" stroke-width="6" stroke-linecap="round"`); // 九宮格板
+  for(let c = 0; c < 3; c++){                                                                              // 規則書的三欄位置
+    const [cx, cy] = PX(FIELD.boardX, (1 - c) * FIELD.colM);
+    s += `<circle cx="${cx}" cy="${cy}" r="9" fill="var(--panel)" stroke="var(--mute)" stroke-width="2"/>`;
+  }
+  s += fText(FIELD.boardX + 0.22, 0, "九宮格", `text-anchor="middle" style="fill:var(--mute)"`);
+  s += `<g id="fStart"></g><g id="fLock"></g><g id="fRobot"></g>`;
+  $("field").innerHTML = s;
+}
+function drawFieldLive(){
+  // 起始位置選擇（機器人回報的 active 才是實際生效的）
+  const active = NT.sd("Auto/Start Side/active");
+  const side = active === "右起始框" ? -1 : active === "左起始框" ? 1 : 0;
+  syncSel($("sideSel"), active);
+  if(NT.connected) $("sideState").textContent = side ? `機器人目前：${active}` : "機器人還沒回報選擇";
+  // 射擊策略（機器人回報的 active 才是實際生效的）
+  syncStratOptions();
+  const stratActive = NT.sd("Auto/Strategy/active");
+  syncSel($("stratSel"), stratActive);
+  if(NT.connected){
+    // 送出後 1 秒機器人還不是這個策略 = 機器人沒有這個選項（多半是機器人程式和儀表板版本不同），會跑預設的上半場
+    const bad = stratSent && stratSent.v !== stratActive && performance.now() - stratSent.t > 1000;
+    if(stratSent && stratSent.v === stratActive) stratSent = null;
+    $("stratState").textContent = bad ? `⚠ 機器人沒有「${stratSent.v}」，實際會跑：${stratActive ?? "—"}`
+        : stratActive ? `機器人目前：${stratActive}` : "機器人還沒回報策略";
+    $("stratState").style.color = bad ? "var(--bad)" : "";
+  }
+  let st = "";
+  if(side){                                               // 起始位置的機器人外框（虛線）與路徑
+    const sx = FIELD.startX, sy = side * FIELD.startAbsY, h = 0.25;
+    st += fRect(sx - h, sy - h, sx + h, sy + h, `fill="none" stroke="var(--acc)" stroke-width="2" stroke-dasharray="4 3"`);
+    st += fLine([sx, sy], [sx + 0.33, sy], `stroke="var(--acc)" stroke-width="2"`);
+    st += fLine([sx, sy], [FIELD.shootX, 0], `stroke="var(--acc)" stroke-width="1" stroke-dasharray="2 4" opacity=".7"`);
+  }
+  $("fStart").innerHTML = st;
+
+  const pose = NT.values["/Pose/robotPose"];
+  const holes = NT.sd("Vision/Board Holes"), locked = NT.sd("Vision/Locked") === true;
+  const tIdx = NT.sd("AutoShoot/Target Index");
+  // 鎖定的孔（同一欄 4 個孔在俯視圖會疊在一起）
+  let g = "";
+  let bx = 0, by = 0, nb = 0;
+  if(locked && Array.isArray(holes)){
+    for(let i = 0; i < 12; i++){
+      const x = holes[2 * i], y = holes[2 * i + 1];
+      if(typeof x !== "number" || !isFinite(x)) continue;
+      bx += x; by += y; nb++;
+      const tgt = typeof tIdx === "number" && tIdx === i;
+      const [cx, cy] = PX(x, y);
+      g += `<circle cx="${cx}" cy="${cy}" r="${tgt ? 8 : 5}" fill="${tgt ? "var(--tgt)" : "var(--acc)"}" opacity="${tgt ? 1 : 0.75}"/>`;
+    }
+  }
+  $("fLock").innerHTML = g;
+  // 機器人
+  let rg = "";
+  const rows = [];
+  if(Array.isArray(pose) && pose.length >= 3){
+    const [x, y, codeDeg] = pose;
+    const deg = codeDeg + FIELD.camYaw;                                    // 相機朝向（機器人實際的「車頭」）
+    const th = deg * Math.PI / 180, c = Math.cos(th), s = Math.sin(th);
+    const pt = (f, l) => [x + f * c - l * s, y + f * s + l * c];         // 以相機那面為前的車身座標 (前, 左) -> 場地
+    const corners = [pt(0.25, 0.25), pt(0.25, -0.25), pt(-0.25, -0.25), pt(-0.25, 0.25)];
+    rg += `<polygon points="${corners.map(p => PS(...p)).join(" ")}" fill="color-mix(in srgb,var(--acc) 25%,transparent)" stroke="var(--acc)" stroke-width="2"/>`;
+    rg += fLine([x, y], pt(0.42, 0), `stroke="var(--acc)" stroke-width="3" stroke-linecap="round"`);
+    const cam = pt(FIELD.camF, FIELD.camL);                                // 相機＝發射口
+    const L = Math.max(0, (FIELD.boardX - cam[0]) / Math.max(c, 0.05));   // 發射方向畫到板面
+    const end = [cam[0] + L * c, cam[1] + L * s];
+    if(c > 0.05) rg += fLine(cam, end, `stroke="var(--tgt)" stroke-width="1.5" stroke-dasharray="5 5"`);
+    const [ccx, ccy] = PX(...cam);
+    rg += `<circle cx="${ccx}" cy="${ccy}" r="4" fill="var(--tgt)"/>`;
+    const degN = ((deg + 540) % 360) - 180;
+    rows.push(["機器人位置", `X ${x.toFixed(2)}  Y ${y.toFixed(2)} m  相機朝向 ${degN.toFixed(1)}°（0 = 正對九宮格）`]);
+    rows.push(["車身中心到板面", `${(FIELD.boardX - x).toFixed(2)} m（里程計）`]);
+    if(c > 0.05) rows.push(["發射方向打到板面", `Y ${end[1].toFixed(2)} m（中欄 0，左欄 +0.90，右欄 −0.90）`]);
+    $("fieldInfo").textContent = `X ${x.toFixed(2)}  Y ${y.toFixed(2)}  ${degN.toFixed(0)}°`;
+  }else{
+    $("fieldInfo").textContent = "沒有位置資料";
+  }
+  $("fRobot").innerHTML = rg;
+  if(nb){
+    bx /= nb; by /= nb;
+    rows.push(["視覺鎖定板位", `X ${bx.toFixed(2)}  Y ${by.toFixed(2)} m（規則書 X ${FIELD.boardX.toFixed(2)}  Y 0.00）`]);
+    rows.push(["差距（視覺 − 規則書）", `ΔX ${(bx - FIELD.boardX >= 0 ? "+" : "") + (bx - FIELD.boardX).toFixed(2)}  ΔY ${(by >= 0 ? "+" : "") + by.toFixed(2)} m`]);
+  }else{
+    rows.push(["視覺鎖定板位", "沒鎖定（要停著並看到全部 12 孔）"]);
+  }
+  kv($("fieldKv"), rows);
+}
+
+/* ---------------------------------------------------------------- 小工具 */
+const num = (x, d = 1) => (typeof x === "number" && isFinite(x)) ? x.toFixed(d) : "—";
+function setChip(id, state, text){ const e = $(id); e.className = "chip " + state; e.querySelector("small").textContent = text }
+function kv(el, rows){ el.innerHTML = rows.map(([a, b]) => `<span>${a}</span><span class="mono">${b}</span>`).join("") }
+
+function gaugeSvg(svg, minDeg, maxDeg, label){
+  // 半圓儀表：左端 = minDeg，右端 = maxDeg
+  const cx = 130, cy = 140, R = 108;
+  const pt = (deg, r) => { const t = Math.PI * (1 - (deg - minDeg) / (maxDeg - minDeg)); return [cx + r * Math.cos(t), cy - r * Math.sin(t)] };
+  let s = `<path d="M ${cx - R} ${cy} A ${R} ${R} 0 0 1 ${cx + R} ${cy}" fill="none" stroke="var(--line)" stroke-width="14" stroke-linecap="round"/>`;
+  const ticks = []; const step = (maxDeg - minDeg) / 6;
+  for(let i = 0; i <= 6; i++){ const d = minDeg + i * step; const [x1, y1] = pt(d, R + 12), [x2, y2] = pt(d, R + 20), [tx, ty] = pt(d, R + 34);
+    ticks.push(`<line x1="${x1}" y1="${y1}" x2="${x2}" y2="${y2}" stroke="var(--mute)" stroke-width="2"/><text x="${tx}" y="${ty + 4}" text-anchor="middle" font-size="11" style="fill:var(--mute)">${Math.round(d)}</text>`) }
+  s += ticks.join("");
+  s += `<line id="${svg.id}-tgt" x1="${cx}" y1="${cy}" x2="${cx}" y2="${cy}" stroke="var(--tgt)" stroke-width="3" stroke-dasharray="4 4"/>`;
+  s += `<line id="${svg.id}-n" x1="${cx}" y1="${cy}" x2="${cx}" y2="${cy - R + 8}" stroke="var(--acc)" stroke-width="5" stroke-linecap="round"/><circle cx="${cx}" cy="${cy}" r="8" fill="var(--acc)"/>`;
+  svg.innerHTML = s; svg._g = {cx, cy, R, minDeg, maxDeg, pt};
+}
+function gaugeSet(svg, deg, tgtDeg){
+  const g = svg._g; if(!g) return;
+  const clamp = d => Math.max(g.minDeg, Math.min(g.maxDeg, d));
+  if(typeof deg === "number" && isFinite(deg)){ const [x, y] = g.pt(clamp(deg), g.R - 8); const n = $(svg.id + "-n"); n.setAttribute("x2", x); n.setAttribute("y2", y); n.style.opacity = 1 } else $(svg.id + "-n").style.opacity = .2;
+  const t = $(svg.id + "-tgt");
+  if(typeof tgtDeg === "number" && isFinite(tgtDeg)){ const [x, y] = g.pt(clamp(tgtDeg), g.R - 8); t.setAttribute("x2", x); t.setAttribute("y2", y); t.style.opacity = 1 } else t.style.opacity = 0;
+}
+gaugeSvg($("gHood"), 0, 90);
+drawFieldStatic();
+
+/* ---------------------------------------------------------------- ShotTable 填表工具
+   轉速 -> /SmartDashboard/Tune/Shooter RPS（RT 按住時讀這個值）
+   仰角 -> /SmartDashboard/Tune/Hood Target Deg（機器人啟用時直接走到這個角度）
+   每一發的紀錄存在這個瀏覽器（localStorage "shotlog"），可匯出 ShotTable 程式碼與 CSV。 */
+const TUNE = { rpsKey: "/SmartDashboard/Tune/Shooter RPS", hoodKey: "/SmartDashboard/Tune/Hood Target Deg", hole: 4, seq: 0,
+  log: (() => { try{ return JSON.parse(localStorage.getItem("shotlog") || "[]") }catch(e){ return [] } })() };
+const ROW_NAME = ["小孔排", "大孔第 1 排", "大孔第 2 排", "大孔第 3 排"];
+function saveLog(){ try{ localStorage.setItem("shotlog", JSON.stringify(TUNE.log)) }catch(e){} }
+function tuneWarn(msg){ $("tuneInfo").textContent = msg; $("tuneInfo").style.color = "var(--bad)" }
+function sendRps(v){
+  v = Math.min(110, Math.max(0, Math.round(Number(v) * 10) / 10));
+  if(!isFinite(v)) return;
+  if(!NT.connected){ tuneWarn("沒連上機器人"); return }
+  NT.setNumber(TUNE.rpsKey, v); $("tuneRps").value = v;
+}
+const SPIN_KEY = "/SmartDashboard/Tune/Shooter Spin";
+function sendSpin(v){
+  v = Math.min(0.3, Math.max(0, Math.round(Number(v) * 100) / 100));
+  if(!isFinite(v)) return;
+  if(!NT.connected){ tuneWarn("沒連上機器人"); return }
+  NT.setNumber(SPIN_KEY, v); $("tuneSpin").value = v;
+}
+function sendHood(v){
+  v = Math.min(40, Math.max(0, Math.round(Number(v) * 10) / 10));
+  if(!isFinite(v)) return;
+  if(!NT.connected){ tuneWarn("沒連上機器人"); return }
+  // 機器人只在「值改變」時才動作；同一個角度再送一次時加極小的差，才會重新套用
+  NT.setNumber(TUNE.hoodKey, v + (TUNE.seq++ % 2) * 1e-6); $("tuneHood").value = v;
+}
+/** 目標孔的距離：鎖定板位時用「目前位置的相機 -> 鎖定的孔」（與自主射擊查表同一套），否則用即時視覺。 */
+function holeDist(i){
+  const pose = NT.values["/Pose/robotPose"], holes = NT.sd("Vision/Board Holes");
+  if(NT.sd("Vision/Locked") === true && Array.isArray(pose) && Array.isArray(holes) && isFinite(holes[2 * i])){
+    const th = (pose[2] + FIELD.camYaw) * Math.PI / 180, c = Math.cos(th), s = Math.sin(th);   // 相機朝向
+    const cx = pose[0] + FIELD.camF * c - FIELD.camL * s, cy = pose[1] + FIELD.camF * s + FIELD.camL * c;
+    return { d: Math.hypot(holes[2 * i] - cx, holes[2 * i + 1] - cy), src: "鎖定板位" };
+  }
+  const dm = NT.v("dist_m");
+  if(Array.isArray(dm) && typeof dm[i] === "number" && isFinite(dm[i])) return { d: dm[i], src: "即時視覺" };
+  return { d: NaN, src: "沒有距離" };
+}
+function logShot(hit){
+  if(!NT.connected){ tuneWarn("沒連上機器人，無法記錄"); return }
+  const { d, src } = holeDist(TUNE.hole);
+  if(!isFinite(d)){ tuneWarn("孔 " + TUNE.hole + " 沒有距離（先停著讓視覺鎖定板位）"); return }
+  const hood = NT.sd("Hood/Position (Degrees)"), rps = NT.sd("Tune/Shooter RPS");
+  TUNE.log.push({ t: Date.now(), hole: TUNE.hole, row: Math.floor(TUNE.hole / 3), dist: +d.toFixed(3),
+    hood: typeof hood === "number" ? +hood.toFixed(2) : null, rps: typeof rps === "number" ? +rps.toFixed(1) : null, hit, src });
+  saveLog(); renderLog();
+}
+function genJava(){
+  const L = ["// 由儀表板填表工具產生 " + new Date().toLocaleString(),
+             "// 每個點 = 該距離附近「有進球」那幾發的平均仰角與轉速；距離是視覺讀數（與自主射擊查表同一套）",
+             "// 記得刪掉原本 1.0 m / 5.0 m 的佔位 put(...)"];
+  const mean = a => a.reduce((x, y) => x + y, 0) / a.length;
+  for(let r = 0; r < 4; r++){
+    const es = TUNE.log.filter(e => e.row === r).sort((a, b) => a.dist - b.dist);
+    if(!es.length){ L.push(`// row ${r}（${ROW_NAME[r]}）：沒有紀錄`); continue }
+    const groups = [];
+    for(const e of es){                                   // 距離相差 15 cm 內算同一個位置
+      const g = groups[groups.length - 1];
+      if(g && e.dist - mean(g.map(x => x.dist)) <= 0.15) g.push(e); else groups.push([e]);
+    }
+    for(const g of groups){
+      const hits = g.filter(e => e.hit && e.hood !== null && e.rps !== null);
+      const dAll = mean(g.map(e => e.dist));
+      if(!hits.length){ L.push(`// row ${r}（${ROW_NAME[r]}）約 ${dAll.toFixed(2)} m：${g.length} 發都沒進，先不加`); continue }
+      L.push(`put(${r}, ${mean(hits.map(e => e.dist)).toFixed(2)}, ${mean(hits.map(e => e.hood)).toFixed(1)} / 360.0, ${mean(hits.map(e => e.rps)).toFixed(1)});`
+             + `   // ${ROW_NAME[r]}，進 ${hits.length}/${g.length}`);
+    }
+  }
+  return L.join("\n");
+}
+function renderLog(){
+  const n = TUNE.log.length, h = TUNE.log.filter(e => e.hit).length;
+  $("logCount").textContent = n ? `共 ${n} 發，進 ${h} 發` : "還沒有紀錄";
+  $("logTable").innerHTML = "<tr><th>#</th><th>孔</th><th>距離 m</th><th>仰角 °</th><th>RPS</th><th>結果</th><th>距離來源</th></tr>" +
+    TUNE.log.map((e, k) => `<tr><td>${k + 1}</td><td>${e.hole}</td><td>${e.dist.toFixed(2)}</td><td>${e.hood ?? "—"}</td><td>${e.rps ?? "—"}</td>` +
+      `<td style="color:${e.hit ? "var(--ok)" : "var(--bad)"}">${e.hit ? "進" : "沒進"}</td><td>${e.src}</td></tr>`).reverse().join("");
+  $("logJava").value = genJava();
+}
+function downloadCsv(){
+  const rows = [["time", "hole", "row", "dist_m", "hood_deg", "rps", "hit", "dist_source"]]
+    .concat(TUNE.log.map(e => [new Date(e.t).toISOString(), e.hole, e.row, e.dist, e.hood, e.rps, e.hit ? 1 : 0, e.src]));
+  const blob = new Blob(["﻿" + rows.map(r => r.join(",")).join("\n")], { type: "text/csv" });
+  const a = document.createElement("a"); a.href = URL.createObjectURL(blob); a.download = "shottable_log.csv"; a.click();
+}
+function renderTune(){
+  document.querySelectorAll("#tuneHoles button").forEach(b => b.classList.toggle("on", +b.dataset.i === TUNE.hole));
+  const { d, src } = holeDist(TUNE.hole);
+  $("tuneDist").textContent = `孔 ${TUNE.hole}（${ROW_NAME[Math.floor(TUNE.hole / 3)]}）距離 ${isFinite(d) ? d.toFixed(2) + " m" : "—"}（${src}）`;
+  const rps = NT.sd("Tune/Shooter RPS"), top = NT.sd("Shooter/Top Actual RPS"), bot = NT.sd("Shooter/Bottom Actual RPS");
+  $("tuneRpsNow").textContent = `機器人設定 ${num(rps, 1)} RPS｜實際 上 ${num(top, 1)} 下 ${num(bot, 1)}`;
+  if(document.activeElement !== $("tuneRps") && $("tuneRps").value === "" && typeof rps === "number") $("tuneRps").value = rps;
+  const spin = NT.sd("Tune/Shooter Spin");
+  if(document.activeElement !== $("tuneSpin") && $("tuneSpin").value === "" && typeof spin === "number") $("tuneSpin").value = spin;
+  if(typeof rps === "number" && typeof spin === "number"){
+    const t = rps * (1 - spin), b = rps * (1 + spin);
+    $("tuneSpinNow").textContent = `差速 ${spin.toFixed(2)} → 目標 上 ${t.toFixed(1)}（${Math.round(t * 60)} RPM）下 ${b.toFixed(1)}（${Math.round(b * 60)} RPM）` + (b > 98 ? "｜下輪可能到不了" : "");
+    $("tuneSpinNow").style.color = b > 98 ? "var(--bad)" : "";
+  } else $("tuneSpinNow").textContent = "差速 —";
+  const hd = NT.sd("Hood/Position (Degrees)"), ht = NT.sd("Hood/Target (Rotations)");
+  document.querySelectorAll("[data-gain]").forEach(inp => {
+    const v = NT.sd("Tune/Hood " + inp.dataset.gain);
+    if(document.activeElement !== inp && typeof v === "number") inp.value = +v.toFixed(3);
+  });
+  document.querySelectorAll("[data-feeder]").forEach(inp => {
+    const v = NT.sd("Tune/Feeder " + inp.dataset.feeder);
+    if(document.activeElement !== inp && typeof v === "number") inp.value = +v.toFixed(3);
+  });
+  document.querySelectorAll("[data-orbit]").forEach(inp => {
+    const v = NT.sd("Tune/Orbit " + inp.dataset.orbit);
+    if(document.activeElement !== inp && typeof v === "number") inp.value = +v.toFixed(2);
+  });
+  document.querySelectorAll("[data-tnum]").forEach(inp => {
+    const v = NT.sd(inp.dataset.tnum);
+    if(document.activeElement !== inp && typeof v === "number") inp.value = +v.toFixed(2);
+  });
+  document.querySelectorAll("[data-tkey]").forEach(inp => {
+    const v = NT.sd(inp.dataset.tkey);
+    if(document.activeElement !== inp && typeof v === "number") inp.value = v;
+  });
+  $("orbitNow").textContent = `最近一發：${NT.sd("Orbit/Ball Detect") ?? "—"}｜ID57 目前電流 ${num(NT.sd("Orbit2/Current (A)"), 1)} A`;
+  { const st = NT.sd("Shake/Status"); if(typeof st === "string") $("shakeBtnInfo").textContent = "最近一次：" + st; }
+  $("feederNow").textContent = `狀態 ${NT.sd("Feeder/State") ?? "—"}｜卡球 ${num(NT.sd("Feeder/Jam Count"), 0)} 次｜最近原因 ${NT.sd("Feeder/Jam Reason") ?? "—"}｜電流 ${num(NT.sd("Feeder/Current (A)"), 1)} A｜離格線 ${num(NT.sd("Feeder/Grid Error (Degrees)"), 1)}°`;
+  document.querySelectorAll("[data-shake]").forEach(inp => {
+    const v = NT.sd("Tune/Shake " + inp.dataset.shake);
+    if(document.activeElement !== inp && typeof v === "number") inp.value = +v.toFixed(2);
+  });
+  { const en = NT.sd("Tune/Shake Enabled"), deg = NT.sd("Tune/Shake Deg"), a = NT.sd("Tune/Shake Alpha"), w = NT.sd("Tune/Shake Max Omega");
+    if(typeof en === "number" && en < 0.5) $("shakeNow").textContent = "目前不晃";
+    else if(typeof deg === "number" && typeof a === "number" && typeof w === "number"){
+      // 估計一次晃動（+角度 -> -角度 -> 回 0）的時間：加速到最高轉速、再減速
+      const leg = th => { const t1 = w / a, d1 = w * t1; return th <= d1 ? 2 * Math.sqrt(th / a) : 2 * t1 + (th - d1) / w };
+      const r = deg * Math.PI / 180, total = leg(r) + leg(2 * r) + leg(r);
+      $("shakeNow").textContent = `左右各 ${deg.toFixed(0)}°，0→${w.toFixed(1)} rad/s 約 ${(w / a).toFixed(2)} 秒｜晃一次約 ${total.toFixed(1)} 秒`;
+    } else $("shakeNow").textContent = "—"; }
+  { const e = NT.sd("Hood/Error (Degrees)"), vlt = NT.sd("Hood/Motor Voltage (V)");
+    $("hoodErrNow").textContent = `誤差 ${num(e, 2)}°（正 = 停在目標下方）｜馬達 ${num(vlt, 2)} V`;
+    $("hoodErrNow").style.color = typeof e === "number" && Math.abs(e) <= 0.3 ? "var(--ok)" : ""; }
+  $("tuneHoodNow").textContent = `目前 ${num(hd, 1)}°｜目標 ${typeof ht === "number" ? (ht * 360).toFixed(1) : "—"}°`;
+  if($("tuneInfo").style.color !== "var(--bad)") $("tuneInfo").textContent = `目標孔 ${TUNE.hole}`;
+}
+(function initTune(){
+  for(let i = 0; i < 12; i++){
+    const b = document.createElement("button"); b.textContent = i; b.dataset.i = i;
+    b.addEventListener("click", () => { TUNE.hole = i; $("tuneInfo").style.color = ""; renderTune() });
+    $("tuneHoles").appendChild(b);
+  }
+  document.querySelectorAll("[data-rps]").forEach(b => b.addEventListener("click", () => {
+    const cur = $("tuneRps").value !== "" ? Number($("tuneRps").value) : (NT.sd("Tune/Shooter RPS") ?? 75);
+    sendRps(cur + Number(b.dataset.rps));
+  }));
+  $("tuneRps").addEventListener("keydown", e => { if(e.key === "Enter") sendRps($("tuneRps").value) });
+  document.querySelectorAll("[data-spin]").forEach(b => b.addEventListener("click", () => {
+    const cur = $("tuneSpin").value !== "" ? Number($("tuneSpin").value) : (NT.sd("Tune/Shooter Spin") ?? 0.05);
+    sendSpin(cur + Number(b.dataset.spin));
+  }));
+  $("tuneSpin").addEventListener("keydown", e => { if(e.key === "Enter") sendSpin($("tuneSpin").value) });
+  document.querySelectorAll("[data-hood]").forEach(b => b.addEventListener("click", () => {
+    const cur = $("tuneHood").value !== "" ? Number($("tuneHood").value) : (NT.sd("Hood/Position (Degrees)") ?? 0);
+    sendHood(cur + Number(b.dataset.hood));
+  }));
+  $("tuneHood").addEventListener("keydown", e => { if(e.key === "Enter") sendHood($("tuneHood").value) });
+  // Feeder 參數：範圍與機器人端相同
+  const FEEDER_RANGE = { "kP": [0, 200], "Cruise": [0.2, 10], "Accel": [0.5, 40], "Jam Amps": [5, 40], "Stall Sec": [0.05, 1],
+                         "Grace Sec": [0, 1], "Retries": [0, 3], "Fwd Volts": [0, 12], "Fwd Sec": [0, 2], "Rev Deg": [0, 180] };
+  document.querySelectorAll("[data-feeder]").forEach(inp => inp.addEventListener("keydown", e => {
+    if(e.key !== "Enter") return;
+    const [lo, hi] = FEEDER_RANGE[inp.dataset.feeder];
+    let v = Number(inp.value);
+    if(!isFinite(v)){ tuneWarn("Feeder 參數要是數字"); return }
+    v = Math.min(hi, Math.max(lo, inp.dataset.feeder === "Retries" ? Math.round(v) : v));
+    if(!NT.connected){ tuneWarn("沒連上機器人"); return }
+    NT.setNumber("/SmartDashboard/Tune/Feeder " + inp.dataset.feeder, v); inp.value = v; inp.blur();
+  }));
+  // 送球偵測參數（Orbit ID57 電流）
+  const ORBIT_RANGE = { "Detect Enabled": [0, 1], "Rise Amps": [0.5, 30] };
+  document.querySelectorAll("[data-orbit]").forEach(inp => inp.addEventListener("keydown", e => {
+    if(e.key !== "Enter") return;
+    const [lo, hi] = ORBIT_RANGE[inp.dataset.orbit];
+    let v = Number(inp.value);
+    if(!isFinite(v)){ tuneWarn("Orbit 參數要是數字"); return }
+    v = Math.min(hi, Math.max(lo, inp.dataset.orbit === "Detect Enabled" ? Math.round(v) : v));
+    if(!NT.connected){ tuneWarn("沒連上機器人"); return }
+    NT.setNumber("/SmartDashboard/Tune/Orbit " + inp.dataset.orbit, v); inp.value = v; inp.blur();
+  }));
+  // 數值（例如整體仰角偏移）：改了按 Enter
+  document.querySelectorAll("[data-tnum]").forEach(inp => inp.addEventListener("keydown", e => {
+    if(e.key !== "Enter") return;
+    const v = Math.max(-10, Math.min(10, Number(inp.value)));
+    if(!isFinite(v)){ tuneWarn("要是數字"); return }
+    if(!NT.connected){ tuneWarn("沒連上機器人"); return }
+    NT.setNumber("/SmartDashboard/" + inp.dataset.tnum, v); inp.value = v; inp.blur();
+  }));
+  // 開關（0 / 1）
+  document.querySelectorAll("[data-tkey]").forEach(inp => inp.addEventListener("keydown", e => {
+    if(e.key !== "Enter") return;
+    const v = Number(inp.value) >= 0.5 ? 1 : 0;
+    if(!NT.connected){ tuneWarn("沒連上機器人"); return }
+    NT.setNumber("/SmartDashboard/" + inp.dataset.tkey, v); inp.value = v; inp.blur();
+  }));
+  // 立即晃一次：Shake/Request 每按 +1（機器人只在啟用中、值有改變時動作）
+  $("shakeNowBtn").addEventListener("click", () => {
+    if(!NT.connected){ tuneWarn("沒連上機器人"); return }
+    if(NT.sd("Robot/Enabled") !== true){ tuneWarn("機器人沒有啟用，不能晃"); return }
+    const cur = Number(NT.values["/SmartDashboard/Shake/Request"] ?? 0);
+    NT.setNumber("/SmartDashboard/Shake/Request", cur + 1);
+  });
+  // 晃底盤參數：範圍與機器人端相同（機器人端也會再限制一次）
+  const SHAKE_RANGE = { "Enabled": [0, 1], "Deg": [0, 30], "Alpha": [0.5, 30], "Max Omega": [0.2, 5], "Kp": [0, 20] };
+  document.querySelectorAll("[data-shake]").forEach(inp => inp.addEventListener("keydown", e => {
+    if(e.key !== "Enter") return;
+    const [lo, hi] = SHAKE_RANGE[inp.dataset.shake];
+    let v = Number(inp.value);
+    if(!isFinite(v)){ tuneWarn("晃動參數要是數字"); return }
+    v = Math.min(hi, Math.max(lo, inp.dataset.shake === "Enabled" ? Math.round(v) : v));
+    if(!NT.connected){ tuneWarn("沒連上機器人"); return }
+    NT.setNumber("/SmartDashboard/Tune/Shake " + inp.dataset.shake, v); inp.value = v; inp.blur();
+  }));
+  document.querySelectorAll("[data-gain]").forEach(inp => inp.addEventListener("keydown", e => {
+    if(e.key !== "Enter") return;
+    const v = Number(inp.value);
+    if(!isFinite(v) || v < 0){ tuneWarn("PID 數值要 ≥ 0"); return }
+    if(!NT.connected){ tuneWarn("沒連上機器人"); return }
+    NT.setNumber("/SmartDashboard/Tune/Hood " + inp.dataset.gain, v); inp.blur();
+  }));
+  $("logHit").onclick = () => { $("tuneInfo").style.color = ""; logShot(true) };
+  $("logMiss").onclick = () => { $("tuneInfo").style.color = ""; logShot(false) };
+  $("logUndo").onclick = () => { TUNE.log.pop(); saveLog(); renderLog() };
+  $("logClear").onclick = () => { if(TUNE.log.length && confirm(`清除全部 ${TUNE.log.length} 筆紀錄？`)){ TUNE.log = []; saveLog(); renderLog() } };
+  $("logCopy").onclick = () => {
+    const done = () => { $("logCopy").textContent = "已複製 ✓"; setTimeout(() => $("logCopy").textContent = "複製程式碼", 1500) };
+    if(navigator.clipboard) navigator.clipboard.writeText($("logJava").value).then(done, () => { $("logJava").select(); document.execCommand("copy"); done() });
+    else { $("logJava").select(); document.execCommand("copy"); done() }
+  };
+  $("logCsv").onclick = downloadCsv;
+  renderLog();
+})();
+
+// 板子 12 個孔：row 0 = 小孔（較小的圈），row 1~3 = 大孔
+const holeEls = [];
+for(let i = 0; i < 12; i++){
+  const d = document.createElement("div"); d.className = "hole" + (i < 3 ? " small" : ""); d.innerHTML = `<span>${i}</span>`;
+  d.title = `點選：底盤與仰角對準孔 ${i}`;
+  d.addEventListener("click", () => sendAim(i));
+  $("board").appendChild(d); holeEls.push(d);
+}
+/* 點選九宮格：寫 Aim/Request（孔編號，-1 = 停止）。機器人只在「啟用中、值有改變」時動作，
+   同一個孔再點一次時加極小的差讓值改變（跟填表工具的仰角一樣）。 */
+const AIM = { key: "/SmartDashboard/Aim/Request", seq: 0, msg: "" };
+function sendAim(i){
+  if(!NT.connected){ AIM.msg = "沒連上機器人"; return }
+  if(i >= 0 && NT.sd("Robot/Enabled") !== true){ AIM.msg = "機器人沒有啟用，點選無效"; return }
+  AIM.msg = "";
+  NT.setNumber(AIM.key, i + (AIM.seq++ % 2) * 1e-6);
+}
+$("aimStop").addEventListener("click", () => sendAim(-1));
+/* 瞄準偏移（自主射擊與點選瞄準都會用；機器人每次開機用程式裡的值，調好要寫回 AutoConstants）。
+   左右：球偏左按「偏左」= +0.5°（車頭多往右轉）；上下：套用到目前瞄準那一排，球偏低按「偏低」= +0.5°（仰角加大）。 */
+const BIAS = { yaw: "/SmartDashboard/Tune/Aim Yaw Bias deg", elev: r => `/SmartDashboard/Tune/Aim Elev Bias Row${r} deg` };
+function biasRow(){
+  const h = NT.sd("Aim/Active") === true ? NT.sd("Aim/Hole") : NT.sd("AutoShoot/Target Index");
+  return typeof h === "number" && h >= 0 ? Math.floor(h / 3) : -1;
+}
+function nudgeBias(kind, d){
+  if(!NT.connected){ AIM.msg = "沒連上機器人"; return }
+  let key;
+  if(kind === "yaw") key = BIAS.yaw;
+  else { const r = biasRow(); if(r < 0){ AIM.msg = "先點一個孔，上下偏移是每一排分開的"; return } key = BIAS.elev(r) }
+  const cur = Number(NT.values[key] ?? 0);
+  AIM.msg = "";
+  NT.setNumber(key, Math.round((cur + d) * 100) / 100);
+}
+document.querySelectorAll("[data-bias]").forEach(b => b.addEventListener("click", () => {
+  const [kind, d] = b.dataset.bias.split(":"); nudgeBias(kind, Number(d));
+}));
+
+/* ---------------------------------------------------------------- 相機 */
+const cam = {url: "", timer: null};
+function camConnect(){
+  const url = $("camurl").value.trim(); LS.set("camurl", url);
+  clearTimeout(cam.timer); cam.url = url;
+  const img = $("camimg");
+  if(!url){ img.style.display = "none"; $("camph").style.display = ""; $("camState").textContent = "未設定"; return }
+  $("camState").textContent = "連線中…";
+  img.onload = () => { img.style.display = "block"; $("camph").style.display = "none"; $("camState").textContent = "串流中" };
+  img.onerror = () => { img.style.display = "none"; $("camph").style.display = ""; $("camState").textContent = "連不上，3 秒後重試"; cam.timer = setTimeout(camConnect, 3000) };
+  img.src = url + (url.includes("?") ? "&" : "?") + "t=" + Date.now();
+}
+$("bCam").onclick = camConnect;
+$("camurl").value = LS.get("camurl", "http://10.94.27.12:1181/stream.mjpg");   // 預設 = Orin 的串流
+$("camurl").addEventListener("keydown", e => { if(e.key === "Enter") camConnect() });
+if($("camurl").value) camConnect();
+
+/* ---------------------------------------------------------------- 連線與主題 */
+$("host").value = LS.get("host", "10.94.27.2");
+function reconnect(){ const h = $("host").value.trim(); LS.set("host", h); NT.open(h) }
+$("host").addEventListener("change", reconnect);
+setInterval(() => { if(!NT.connected && (!NT.ws || NT.ws.readyState > 1)) reconnect() }, 2000);
+reconnect();
+function showPage(t){ $("pageMain").hidden = t; $("pageTune").hidden = !t; $("tabMain").classList.toggle("on", !t); $("tabTune").classList.toggle("on", t); LS.set("page", t ? "tune" : "main") }
+$("tabMain").onclick = () => showPage(false); $("tabTune").onclick = () => showPage(true);
+showPage(LS.get("page") === "tune");
+$("bTheme").onclick = () => { const r = document.documentElement; const n = r.dataset.theme === "light" ? "dark" : "light"; r.dataset.theme = n; LS.set("theme", n) };
+document.documentElement.dataset.theme = LS.get("theme", "dark");
+
+/* ---------------------------------------------------------------- 畫面更新（10 Hz） */
+const FIRE = { t: -1e9, fp: undefined };
+function render(){
+  try{ drawFieldLive() }catch(e){ console.error(e) }
+  try{ renderTune() }catch(e){ console.error(e) }
+  const alerts = [];
+  const ntOk = NT.connected;
+  $("dConn").className = "dot " + (ntOk ? "ok" : "bad");
+  $("tConn").textContent = ntOk ? "已連線 " + NT.host : "未連線 " + $("host").value;
+  if(!ntOk) alerts.push(["bad", "和 roboRIO 的 NetworkTables 沒有連線"]);
+
+  // 機器人狀態（Robot.java 發布到 /SmartDashboard/Robot/…）
+  const en = NT.sd("Robot/Enabled"), mode = NT.sd("Robot/Mode"), bat = NT.sd("Robot/Battery V"), mt = NT.sd("Robot/Match Time");
+  $("dEn").className = "dot " + (en === true ? "ok" : (en === false ? "warn" : ""));
+  $("tMode").textContent = (mode ?? "—") + (en === true ? " 啟用" : en === false ? " 停用" : "");
+  $("tBat").textContent = typeof bat === "number" ? bat.toFixed(2) + " V" : "—";
+  $("tBat").style.color = typeof bat === "number" ? (bat < 10.5 ? "var(--bad)" : bat < 11.5 ? "var(--warn)" : "") : "";
+  if(typeof bat === "number" && bat < 10.5) alerts.push(["bad", "電池電壓過低 " + bat.toFixed(2) + " V"]);
+  else if(typeof bat === "number" && bat < 11.5) alerts.push(["warn", "電池電壓偏低 " + bat.toFixed(2) + " V"]);
+  $("tTime").textContent = typeof mt === "number" && mt >= 0 ? Math.floor(mt / 60) + ":" + String(Math.floor(mt % 60)).padStart(2, "0") : "—";
+
+  // 發射輪
+  const topA = NT.sd("Shooter/Top Actual RPS"), topT = NT.sd("Shooter/TopTargetRPS");
+  const botA = NT.sd("Shooter/Bottom Actual RPS"), botT = NT.sd("Shooter/BottomTargetRPS");
+  const shOk = NT.sd("Shooter/At Target Velocity");
+  const maxRps = 110;
+  const bar = (b, t, tx, a, tg) => {
+    $(b).style.width = typeof a === "number" ? Math.max(0, Math.min(100, Math.abs(a) / maxRps * 100)) + "%" : "0";
+    $(t).style.left = typeof tg === "number" ? Math.max(0, Math.min(100, Math.abs(tg) / maxRps * 100)) + "%" : "-10px";
+    $(tx).textContent = typeof a === "number" ? `${(a * 60).toFixed(0)} / ${typeof tg === "number" ? (tg * 60).toFixed(0) : "—"}` : "—";
+  };
+  bar("shTopBar", "shTopTgt", "shTopTxt", topA, topT); bar("shBotBar", "shBotTgt", "shBotTxt", botA, botT);
+  $("shAt").textContent = shOk === true ? "已達目標轉速" : shOk === false ? ((topT || botT) ? "加速中" : "待機") : "—";
+  $("shAt").style.color = shOk === true ? "var(--ok)" : "";
+
+  // 仰角（轉塔機構已拆除，不再顯示）
+  const hoDeg = NT.sd("Hood/Position (Degrees)"), hoOk = NT.sd("Hood/At Target");
+  const hoTgt = NT.sd("AutoShoot/Hood Rot");
+  gaugeSet($("gHood"), hoDeg, typeof hoTgt === "number" ? hoTgt * 360 : undefined);
+  $("hoTxt").textContent = num(hoDeg) + "°";
+  $("hoAt").textContent = hoOk === true ? "到位" : hoOk === false ? "移動中" : "—"; $("hoAt").style.color = hoOk === true ? "var(--ok)" : "";
+
+  // 送球機構
+  kv($("feedKv"), [
+    ["Feeder 位置", num(NT.sd("Feeder/Position (Rotations)"), 2) + " 圈"],
+    ["Orbit 轉速", num(NT.sd("Orbit/Velocity (RPS)"), 1) + " RPS"],
+    ["Orbit 電流", num(NT.sd("Orbit/Current (A)"), 1) + " A"],
+  ]);
+  // 射擊中：送球馬達在轉或 Feeder 位置在動 → 整個畫面邊緣閃綠光（停止後再多亮 0.8 秒避免閃爍）
+  {
+    const ov = NT.sd("Orbit/Velocity (RPS)"), fp = NT.sd("Feeder/Position (Rotations)"), now = performance.now();
+    if((typeof ov === "number" && Math.abs(ov) > 1) || (typeof fp === "number" && FIRE.fp !== undefined && Math.abs(fp - FIRE.fp) > 0.002)) FIRE.t = now;
+    if(typeof fp === "number") FIRE.fp = fp;
+    $("fireGlow").classList.toggle("on", NT.connected && now - FIRE.t < 800);
+  }
+  const orbitA = NT.sd("Orbit/Current (A)"); if(typeof orbitA === "number" && orbitA > 30) alerts.push(["warn", "Orbit 電流偏高 " + orbitA.toFixed(0) + " A（可能卡球）"]);
+
+  // 視覺（Orin 發布 /Vision/…，roboRIO 的整理結果在 /SmartDashboard/Vision/…）
+  const fid = NT.v("frame_id"); const fidAge = NT.age("/Vision/frame_id");
+  const visLive = typeof fid === "number" && fidAge < 1.0;
+  const visRio = NT.sd("Vision/Connected");
+  const grid = NT.v("grid_ok"), nbig = NT.v("n_big"), nsmall = NT.v("n_small"), fps = NT.v("fps");
+  const litO = NT.v("lit_small"), litR = NT.sd("Vision/Lit Small Col"), red = NT.v("red_score");
+  const lit = (typeof litR === "number" && litR >= 0) ? litR : (typeof litO === "number" ? litO : -1);
+  if(ntOk && !visLive) alerts.push(["bad", "Orin 視覺沒有資料（frame_id 沒在更新）"]);
+  else if(visLive && grid === false) alerts.push(["warn", "視覺沒有把 12 個孔排進格子（grid_ok = false）"]);
+  if(visLive && lit < 0) alerts.push(["warn", "看不出哪一個小孔亮燈"]);
+  kv($("visKv"), [
+    ["視覺連線", visLive ? "正常" : "斷線"], ["幀率", num(fps, 1) + " fps"],
+    ["看到的孔", `大 ${nbig ?? "—"} ／ 小 ${nsmall ?? "—"}`], ["格子排列", grid === true ? "OK" : grid === false ? "失敗" : "—"],
+    ["亮燈小孔", lit >= 0 ? ["左", "中", "右"][lit] : "不確定"],
+    ["紅色分數", Array.isArray(red) ? red.map(x => x.toFixed(2)).join(" / ") : "—"],
+  ]);
+  $("boardInfo").textContent = visLive ? `大 ${nbig} ／ 小 ${nsmall}` : "—";
+  const bearing = NT.v("bearing_deg"), dist = NT.v("dist_m");
+  const tIdx = NT.sd("AutoShoot/Target Index");
+  const aimOn = NT.sd("Aim/Active") === true, aimHole = NT.sd("Aim/Hole");
+  {
+    const live = NT.sd("AutoShoot/Live Aim"), b = NT.sd("AutoShoot/Live Bearing deg"), e = NT.sd("AutoShoot/Live Elev deg");
+    const detail = aimOn ? `｜${live ?? "—"}｜左右 ${num(b, 1)}°  上下 ${num(e, 1)}°` : "";
+    $("aimStatus").textContent = AIM.msg || ((NT.sd("Aim/Status") ?? "點孔：底盤與仰角自動對準（不發射）") + detail);
+    $("aimStatus").style.color = AIM.msg ? "var(--bad)" : aimOn ? "var(--ok)" : "";
+    $("holeAimInfo").textContent = AIM.msg || (aimOn ? `瞄準孔 ${aimHole}｜${live ?? "—"}｜左右 ${num(b, 1)}°  上下 ${num(e, 1)}°` : "選孔後底盤與仰角會自動對準（不發射，要機器人啟用）");
+    $("holeAimInfo").style.color = AIM.msg ? "var(--bad)" : aimOn ? "var(--ok)" : "";
+    // 偏移顯示：度數與目前距離換算的公分
+    const dist = NT.sd("AutoShoot/Distance m"), cm = deg => (typeof deg === "number" && typeof dist === "number") ? ` ≈${(Math.tan(deg * Math.PI / 180) * dist * 100).toFixed(0)}cm` : "";
+    const yb = NT.values[BIAS.yaw], r = biasRow();
+    const rows = [1, 2, 3].map(k => { const v = NT.values[BIAS.elev(k)]; return `${k === r ? "▶" : ""}第${k}排 ${num(v, 1)}°${k === r ? cm(v) : ""}` }).join("  ");
+    $("biasInfo").textContent = `偏移 左右 ${num(yb, 1)}°${cm(yb)}（+ = 往右修）｜上下 ${rows}（+ = 往上修）`;
+  }
+  holeEls.forEach((el, i) => {
+    const seen = visLive && Array.isArray(bearing) && typeof bearing[i] === "number" && isFinite(bearing[i]);
+    const d = visLive && Array.isArray(dist) && typeof dist[i] === "number" && isFinite(dist[i]) ? dist[i].toFixed(1) + "m" : "";
+    el.className = "hole" + (i < 3 ? " small" : "") + (seen ? " seen" : "") + (i < 3 && i === lit ? " lit" : "") + (typeof tIdx === "number" && tIdx === i ? " target" : "")
+      + (aimOn && aimHole === i ? " aimsel" : "");
+    el.innerHTML = `<span>${i}${seen ? `<br>${bearing[i].toFixed(0)}°<br>${d}` : ""}</span>`;
+  });
+
+  // 相機上疊的小資訊
+  $("camhud").innerHTML = visLive ? `<span class="pill">${num(fps, 0)} fps</span><span class="pill">大 ${nbig} 小 ${nsmall}</span>` + (lit >= 0 ? `<span class="pill" style="color:#ff8a8a">亮燈：${["左", "中", "右"][lit]}</span>` : "") : "";
+
+  // 發射條件
+  const anyTarget = (typeof topT === "number" && topT > 0);
+  setChip("cShooter", shOk === true ? "ok" : anyTarget ? "bad" : "na", shOk === true ? "到位" : anyTarget ? "加速中" : "待機");
+  setChip("cHood", hoOk === true ? "ok" : hoOk === false ? "bad" : "na", hoOk === true ? "到位" : hoOk === false ? "移動中" : "—");
+  setChip("cVision", visLive && visRio !== false ? (lit >= 0 ? "ok" : "bad") : "bad", visLive ? (lit >= 0 ? "有目標" : "無亮燈") : "斷線");
+  const ready = shOk === true && hoOk === true;
+  $("readyText").textContent = ready ? "可以射擊" : "未就緒"; $("readyText").style.color = ready ? "var(--ok)" : "var(--mute)";
+
+  // 自主射擊
+  const fired = NT.sd("AutoShoot/Balls Fired");
+  $("ballBar").style.width = typeof fired === "number" ? Math.min(100, fired / 27 * 100) + "%" : "0";
+  $("autoText").textContent = typeof fired === "number" ? `${fired} / 27 顆` : "—";
+  kv($("autoKv"), [
+    ["目標孔編號", typeof tIdx === "number" ? tIdx : "—"],
+    ["到目標距離", num(NT.sd("AutoShoot/Distance m"), 2) + " m"],
+    ["仰角目標", typeof hoTgt === "number" ? num(hoTgt * 360) + "°" : "—"],
+    ["發射輪目標", num(NT.sd("AutoShoot/Shooter RPS"), 1) + " RPS"],
+  ]);
+
+  $("alerts").innerHTML = alerts.map(a => `<span class="alert ${a[0]}">${a[1]}</span>`).join("");
+}
+/* ---------------------------------------------------------------- 各孔定位數據表（手動填，存 localStorage "holetable"） */
+const HOLE_ROW = ["小孔排", "大孔第 1 排", "大孔第 2 排", "大孔第 3 排"], HOLE_COL = ["左", "中", "右"];
+const HOLE_F = ["bearing", "hood", "rps", "dist", "note"];
+let HOLES = (() => { try{ const a = JSON.parse(localStorage.getItem("holetable") || "[]"); if(Array.isArray(a) && a.length === 12) return a }catch(e){} return Array.from({length: 12}, () => ({})) })();
+function saveHoles(){ try{ localStorage.setItem("holetable", JSON.stringify(HOLES)) }catch(e){} pushHoles() }
+// 把數據表送到機器人：Tune/Hole <i> Bearing / Hood / RPS（空白 = NaN，機器人改用程式內建值）。
+// 只送有變的值；重新連線後全部重送一次（機器人重開機後也會拿到）
+let HOLE_SENT = {}, holeWasConn = false;
+function pushHoles(){
+  if(!NT.connected){ holeWasConn = false; return }
+  if(!holeWasConn){ HOLE_SENT = {}; holeWasConn = true }
+  HOLES.forEach((h, i) => {
+    for(const [f, k] of [["bearing", "Bearing"], ["hood", "Hood"], ["rps", "RPS"]]){
+      const v = typeof h[f] === "number" && isFinite(h[f]) ? h[f] : NaN, key = `/SmartDashboard/Tune/Hole ${i} ${k}`;
+      if(String(HOLE_SENT[key]) !== String(v)){ NT.setNumber(key, v); HOLE_SENT[key] = v }
+    }
+  });
+}
+setInterval(() => {
+  pushHoles();
+  const src = NT.sd("AutoShoot/Hole Source");
+  if(NT.connected && typeof src === "string") $("holeSrc").textContent = "機器人最近一孔：" + src;
+}, 1000);
+function buildHoleTbl(){
+  $("holeTbl").innerHTML = "<tr><th>孔</th><th>位置</th><th>左右角度 °</th><th>仰角 °</th><th>轉速 RPS</th><th>距離 m</th><th>備註</th><th></th></tr>" +
+    HOLES.map((h, i) => `<tr><td>${i}</td><td style="text-align:left;white-space:nowrap">${HOLE_ROW[Math.floor(i / 3)]}・${HOLE_COL[i % 3]}</td>` +
+      ["bearing", "hood", "rps", "dist"].map(f => `<td><input data-hi="${i}" data-hf="${f}" type="number" step="0.1" style="width:5.5em" value="${h[f] ?? ""}"></td>`).join("") +
+      `<td><input data-hi="${i}" data-hf="note" style="width:9em;text-align:left" value="${(h.note ?? "").replace(/"/g, "&quot;")}"></td>` +
+      `<td><button data-hget="${i}">帶入</button></td></tr>`).join("");
+}
+function holeRead(i){
+  const bearing = NT.v("bearing_deg"), hood = NT.sd("Hood/Position (Degrees)"), rps = NT.sd("Tune/Shooter RPS"), { d } = holeDist(i);
+  const r = (x, k) => (typeof x === "number" && isFinite(x)) ? +x.toFixed(k) : undefined;
+  return { bearing: r(Array.isArray(bearing) ? bearing[i] : undefined, 1), hood: r(hood, 1), rps: r(rps, 1), dist: r(d, 2) };
+}
+$("holeTbl").addEventListener("input", e => {
+  const t = e.target; if(t.dataset.hi === undefined) return;
+  const v = t.dataset.hf === "note" ? t.value : (t.value === "" ? undefined : +t.value);
+  HOLES[+t.dataset.hi][t.dataset.hf] = v; saveHoles();
+});
+$("holeTbl").addEventListener("click", e => {
+  const b = e.target.closest("[data-hget]"); if(!b) return;
+  const i = +b.dataset.hget, g = holeRead(i);
+  if(!NT.connected){ $("holeInfo").textContent = "沒連上機器人，無法帶入"; return }
+  for(const f of ["bearing", "hood", "rps", "dist"]) if(g[f] !== undefined) HOLES[i][f] = g[f];
+  saveHoles(); buildHoleTbl(); $("holeInfo").textContent = `孔 ${i} 已帶入（沒有讀數的欄位保持原值）`;
+});
+function holeText(){
+  const T = String.fromCharCode(9), N = String.fromCharCode(10);
+  return ["孔", "位置", "左右角度°", "仰角°", "轉速RPS", "距離m", "備註"].join(T) + N + HOLES.map((h, i) =>
+    [i, HOLE_ROW[Math.floor(i / 3)] + "・" + HOLE_COL[i % 3], ...["bearing", "hood", "rps", "dist"].map(f => h[f] ?? ""), h.note ?? ""].join(T)).join(N);
+}
+$("holeCopy").onclick = async () => { try{ await navigator.clipboard.writeText(holeText()); $("holeInfo").textContent = "已複製" }catch(e){ $("holeInfo").textContent = "複製失敗，請改用下載 CSV" } };
+$("holeCsv").onclick = () => {
+  const blob = new Blob([String.fromCharCode(0xfeff) + holeText().split(String.fromCharCode(9)).join(",")], { type: "text/csv" });
+  const a = document.createElement("a"); a.href = URL.createObjectURL(blob); a.download = "hole_table.csv"; a.click();
+};
+$("holeClear").onclick = () => { if(confirm("清除整張各孔數據表？")){ HOLES = Array.from({length: 12}, () => ({})); saveHoles(); buildHoleTbl() } };
+$("holeSel").onchange = e => { TUNE.hole = +e.target.value; renderTune(); sendAim(TUNE.hole) };
+$("holeAimStop").onclick = () => sendAim(-1);
+setInterval(() => { const sel = $("holeSel"); if(document.activeElement !== sel && +sel.value !== TUNE.hole) sel.value = TUNE.hole }, 200);
+$("holeRec").onclick = () => {
+  const i = TUNE.hole, info = $("holeRecInfo");
+  if(!NT.connected){ info.textContent = "沒連上機器人，無法記錄"; info.style.color = "var(--bad)"; return }
+  const g = holeRead(i), got = [], miss = [];
+  for(const [f, n] of [["bearing", "左右角度"], ["hood", "仰角"], ["rps", "轉速"], ["dist", "距離"]]){
+    if(g[f] !== undefined){ HOLES[i][f] = g[f]; got.push(n) } else miss.push(n) }
+  saveHoles(); buildHoleTbl();
+  info.style.color = miss.length ? "var(--warn)" : "var(--ok)";
+  info.textContent = `孔 ${i} 已記錄：${got.join("、") || "（什麼都沒讀到）"}` + (miss.length ? `｜沒讀到：${miss.join("、")}（保持原值，可手動填）` : "");
+  const row = $("holeTbl").rows[i + 1]; if(row){ row.style.background = "color-mix(in srgb,var(--ok) 25%,transparent)"; setTimeout(() => row.style.background = "", 1200) }
+};
+buildHoleTbl();
+
+setInterval(render, 100); render();
+</script>
+</body>
+</html>

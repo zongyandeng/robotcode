@@ -1,0 +1,260 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>SAM 標註審查工具</title>
+<style>
+:root{--bg:#14171c;--panel:#1d2128;--line:#2c323c;--fg:#e6e9ef;--mute:#8b94a3;--ok:#3ecf6e;--bad:#ff5d5d;--loose:#ffb020;--new:#38bdf8;--acc:#6ea8fe}
+*{box-sizing:border-box}
+html,body{height:100%;margin:0;background:var(--bg);color:var(--fg);font:14px/1.45 system-ui,"Noto Sans TC","Microsoft JhengHei",sans-serif}
+button,select,input,textarea{font:inherit;color:var(--fg);background:#262c36;border:1px solid var(--line);border-radius:6px;padding:5px 10px}
+button{cursor:pointer}button:hover{border-color:var(--acc)}
+button.primary{background:#2d5bd1;border-color:#2d5bd1}
+button.on{border-color:var(--acc);background:#2a3a5c}
+#app{display:grid;grid-template-rows:auto 1fr;height:100%}
+#top{display:flex;flex-wrap:wrap;gap:8px;align-items:center;padding:8px 12px;background:var(--panel);border-bottom:1px solid var(--line)}
+#top .sp{flex:1}
+#main{display:grid;grid-template-columns:230px 1fr 320px;min-height:0}
+#left,#right{background:var(--panel);overflow:auto;min-height:0}
+#left{border-right:1px solid var(--line)}#right{border-left:1px solid var(--line);padding:12px}
+#list div{padding:5px 10px;cursor:pointer;display:flex;gap:8px;align-items:center;border-bottom:1px solid #20252d;font-size:12.5px}
+#list div.cur{background:#2a3a5c}
+.dot{width:9px;height:9px;border-radius:50%;flex:none;background:#555}
+#center{position:relative;min-width:0;min-height:0}
+#cv{position:absolute;inset:0;width:100%;height:100%}
+#hint{position:absolute;left:0;right:0;top:40%;text-align:center;color:var(--mute);padding:0 40px;white-space:pre-line}
+h3{margin:14px 0 6px;font-size:13px;color:var(--mute);font-weight:600}
+.inst{display:grid;grid-template-columns:28px 1fr auto;gap:6px;align-items:center;padding:6px;border:1px solid var(--line);border-radius:6px;margin-bottom:6px;cursor:pointer}
+.inst.sel{border-color:var(--acc);background:#232d44}
+.inst .n{font-weight:700;text-align:center}
+.inst small{color:var(--mute)}
+.vb{display:flex;gap:4px;grid-column:1/4}
+.vb button{flex:1;padding:3px 4px;font-size:12px}
+.vb button.ok.on{background:#1f5c36;border-color:var(--ok)}
+.vb button.bad.on{background:#6a2424;border-color:var(--bad)}
+.vb button.loose.on{background:#6a4a10;border-color:var(--loose)}
+.row{display:flex;gap:8px;align-items:center;margin:6px 0}
+textarea{width:100%;min-height:60px;resize:vertical}
+input[type=number]{width:70px}
+kbd{background:#2b313c;border:1px solid var(--line);border-bottom-width:2px;border-radius:4px;padding:0 5px;font-size:12px}
+.keys{color:var(--mute);font-size:12px;line-height:1.9}
+#prog{color:var(--mute)}
+</style>
+</head>
+<body>
+<div id="app">
+ <div id="top">
+  <button class="primary" id="bImg">① 載入圖片資料夾</button>
+  <button class="primary" id="bMask">② 載入 masks JSON</button>
+  <button id="bPrev">③（可選）載入先前審查結果</button>
+  <span id="prog"></span>
+  <span class="sp"></span>
+  <button id="bExp" class="primary">匯出審查結果 (JSON)</button>
+  <button id="bCsv">匯出 CSV</button>
+  <input id="fImg" type="file" accept="image/*" webkitdirectory multiple hidden>
+  <input id="fMask" type="file" accept=".json" hidden>
+  <input id="fPrev" type="file" accept=".json" hidden>
+ </div>
+ <div id="main">
+  <div id="left">
+   <div class="row" style="padding:8px 10px 0"><select id="filter" style="width:100%">
+     <option value="all">全部</option><option value="todo">未審</option><option value="issue">有問題</option>
+     <option value="done">已審 (全部正確)</option><option value="excl">已排除</option></select></div>
+   <div id="list"></div>
+  </div>
+  <div id="center"><canvas id="cv"></canvas><div id="hint">先載入 ① 圖片資料夾（raw 的 104 張）與 ② masks JSON\n（masks JSON 由 splab2 的 export_masks.py 產生）</div></div>
+  <div id="right">
+   <div id="imgName" style="font-weight:700;word-break:break-all"></div>
+   <div class="row">
+     <button id="tHole" class="on">孔 (H)</button><button id="tRing" class="on">亮燈環 (R)</button>
+     <button id="tPoly" class="on">輪廓</button>
+   </div>
+   <h3>此張的 mask（點圖或點清單選取）</h3>
+   <div id="insts"></div>
+   <h3>整張圖</h3>
+   <div class="row">漏掉的孔數 <input id="missing" type="number" min="0" value="0"></div>
+   <div class="row"><label><input type="checkbox" id="excl"> 排除此張（不適合訓練）(X)</label></div>
+   <textarea id="note" placeholder="備註：例如『右上小孔被擋住』"></textarea>
+   <div class="row"><button id="bAllOk">全部設為正確 (A)</button><button id="bDone" class="primary">審完，下一張 (Enter)</button></div>
+   <h3>快捷鍵</h3>
+   <div class="keys"><kbd>←</kbd><kbd>→</kbd> 上/下一張　<kbd>Tab</kbd> 切換 mask<br>
+     <kbd>1</kbd> 正確　<kbd>2</kbd> 錯誤（多餘/不是孔）　<kbd>3</kbd> 範圍不準　<kbd>0</kbd> 清除<br>
+     <kbd>Enter</kbd> 審完：沒標記的 mask 視為「正確」<br>
+     結果自動存在瀏覽器；關掉前請按「匯出」。</div>
+  </div>
+ </div>
+</div>
+<script>
+const $=id=>document.getElementById(id);
+const S={files:{},masks:null,names:[],idx:-1,rev:{},sel:-1,show:{0:true,1:true},poly:true,filter:'all',img:null,imgName:null};
+const KEY='tel_review_v1';
+const VCOL={ok:'#3ecf6e',bad:'#ff5d5d',loose:'#ffb020',none:'#38bdf8'};
+const VTXT={ok:'正確',bad:'錯誤',loose:'範圍不準'};
+const ROLE={'':'自動','big':'大孔','small':'小孔','ring':'亮燈環','other':'其他'};
+
+function save(){try{localStorage.setItem(KEY,JSON.stringify(S.rev))}catch(e){}}
+function load(){try{const t=localStorage.getItem(KEY);if(t)S.rev=JSON.parse(t)}catch(e){}}
+function R(n){return S.rev[n]||(S.rev[n]={reviewed:false,exclude:false,missing:0,note:'',v:{},role:{}})}
+function insts(n){return S.masks?.images?.[n]?.instances||[]}
+function status(n){
+  const r=S.rev[n];if(!r||!r.reviewed)return'todo';
+  if(r.exclude)return'excl';
+  const bad=Object.values(r.v).some(v=>v!=='ok')||r.missing>0;
+  return bad?'issue':'done';
+}
+const SCOL={todo:'#555',issue:'#ffb020',done:'#3ecf6e',excl:'#ff5d5d'};
+
+function buildList(){
+  const l=$('list');l.innerHTML='';
+  S.names.forEach((n,i)=>{
+    const s=status(n);
+    if(S.filter!=='all'&&S.filter!==s)return;
+    const d=document.createElement('div');d.dataset.i=i;if(i===S.idx)d.className='cur';
+    d.innerHTML=`<span class="dot" style="background:${SCOL[s]}"></span><span>${n.replace(/^LINE_ALBUM_場地照片_261013_/,'#')}</span><small style="margin-left:auto;color:var(--mute)">${insts(n).length}</small>`;
+    d.onclick=()=>go(i);l.appendChild(d);
+  });
+  const done=S.names.filter(n=>S.rev[n]?.reviewed).length;
+  $('prog').textContent=S.names.length?`已審 ${done} / ${S.names.length}`:'';
+}
+function go(i){
+  if(i<0||i>=S.names.length)return;
+  S.idx=i;S.sel=-1;const n=S.names[i];S.imgName=n;
+  const f=S.files[n];S.img=null;
+  if(f){const im=new Image();im.onload=()=>{S.img=im;draw()};im.src=URL.createObjectURL(f)}
+  $('imgName').textContent=`${i+1}/${S.names.length}  ${n}`;
+  const r=R(n);$('missing').value=r.missing;$('excl').checked=r.exclude;$('note').value=r.note;
+  buildInsts();buildList();draw();
+  const c=$('list').querySelector('.cur');if(c)c.scrollIntoView({block:'nearest'});
+}
+function setV(k,v){
+  const n=S.imgName;if(!n)return;const r=R(n);
+  if(v)r.v[k]=v;else delete r.v[k];
+  save();buildInsts();buildList();draw();
+}
+function buildInsts(){
+  const n=S.imgName,box=$('insts');box.innerHTML='';if(!n)return;
+  const r=R(n);
+  insts(n).forEach((it,k)=>{
+    if(!S.show[it.prompt])return;
+    const v=r.v[k]||'';
+    const d=document.createElement('div');d.className='inst'+(k===S.sel?' sel':'');
+    d.innerHTML=`<div class="n" style="color:${VCOL[v||'none']}">${k}</div>
+      <div>${it.prompt===0?'孔':'亮燈環'} <small>分數 ${it.score} · 面積 ${it.area}</small></div>
+      <select data-k="${k}" title="類別（可不選，之後自動判斷）">${Object.entries(ROLE).map(([a,b])=>`<option value="${a}" ${(r.role[k]||'')===a?'selected':''}>${b}</option>`).join('')}</select>
+      <div class="vb">${['ok','bad','loose'].map((x,j)=>`<button class="${x} ${v===x?'on':''}" data-k="${k}" data-v="${x}">${j+1} ${VTXT[x]}</button>`).join('')}</div>`;
+    d.onclick=e=>{if(e.target.closest('button,select'))return;S.sel=k;buildInsts();draw()};
+    box.appendChild(d);
+  });
+  box.querySelectorAll('button[data-v]').forEach(b=>b.onclick=e=>{e.stopPropagation();const k=b.dataset.k;setV(k,R(S.imgName).v[k]===b.dataset.v?'':b.dataset.v)});
+  box.querySelectorAll('select[data-k]').forEach(s=>s.onchange=()=>{const r=R(S.imgName);if(s.value)r.role[s.dataset.k]=s.value;else delete r.role[s.dataset.k];save()});
+}
+
+const cv=$('cv'),ctx=cv.getContext('2d');let T={s:1,ox:0,oy:0};
+function draw(){
+  const W=cv.clientWidth,H=cv.clientHeight,dpr=devicePixelRatio||1;
+  cv.width=W*dpr;cv.height=H*dpr;ctx.setTransform(dpr,0,0,dpr,0,0);ctx.clearRect(0,0,W,H);
+  if(!S.img)return;$('hint').style.display='none';
+  const iw=S.img.naturalWidth,ih=S.img.naturalHeight,s=Math.min(W/iw,H/ih);
+  T={s,ox:(W-iw*s)/2,oy:(H-ih*s)/2};
+  ctx.drawImage(S.img,T.ox,T.oy,iw*s,ih*s);
+  const n=S.imgName,r=R(n);
+  insts(n).forEach((it,k)=>{
+    if(!S.show[it.prompt])return;
+    const v=r.v[k]||'',col=VCOL[v||'none'],sel=k===S.sel;
+    ctx.beginPath();it.poly.forEach(([x,y],i)=>{const X=T.ox+x*s,Y=T.oy+y*s;i?ctx.lineTo(X,Y):ctx.moveTo(X,Y)});ctx.closePath();
+    ctx.globalAlpha=sel?.45:.22;ctx.fillStyle=col;ctx.fill();ctx.globalAlpha=1;
+    if(S.poly){ctx.lineWidth=sel?3:1.5;ctx.strokeStyle=col;ctx.setLineDash(it.prompt===1?[6,4]:[]);ctx.stroke();ctx.setLineDash([])}
+    const cx=T.ox+it.centroid[0]*s,cy=T.oy+it.centroid[1]*s;
+    ctx.fillStyle='#fff';ctx.strokeStyle='#000';ctx.lineWidth=3;ctx.font='bold 15px sans-serif';
+    ctx.strokeText(k,cx-5,cy+5);ctx.fillText(k,cx-5,cy+5);
+  });
+}
+function pip(x,y,p){let c=false;for(let i=0,j=p.length-1;i<p.length;j=i++){const[xi,yi]=p[i],[xj,yj]=p[j];if((yi>y)!==(yj>y)&&x<(xj-xi)*(y-yi)/(yj-yi)+xi)c=!c}return c}
+cv.onclick=e=>{
+  if(!S.img)return;const b=cv.getBoundingClientRect(),x=(e.clientX-b.left-T.ox)/T.s,y=(e.clientY-b.top-T.oy)/T.s;
+  let best=-1,ba=1e18;
+  insts(S.imgName).forEach((it,k)=>{if(S.show[it.prompt]&&pip(x,y,it.poly)&&it.area<ba){ba=it.area;best=k}});
+  S.sel=best;buildInsts();draw();
+};
+new ResizeObserver(draw).observe($('center'));
+
+function refreshAll(){buildList();if(S.names.length&&S.idx<0)go(0);else if(S.idx>=0)go(S.idx)}
+function setNames(){
+  const base=S.masks?Object.keys(S.masks.images):Object.keys(S.files);
+  S.names=base.sort((a,b)=>a.localeCompare(b,undefined,{numeric:true}));
+}
+$('bImg').onclick=()=>$('fImg').click();
+$('fImg').onchange=e=>{S.files={};[...e.target.files].forEach(f=>{if(/\.(jpe?g|png)$/i.test(f.name))S.files[f.name]=f});setNames();refreshAll()};
+$('bMask').onclick=()=>$('fMask').click();
+$('fMask').onchange=async e=>{const f=e.target.files[0];if(!f)return;S.masks=JSON.parse(await f.text());setNames();S.idx=-1;refreshAll()};
+$('bPrev').onclick=()=>$('fPrev').click();
+$('fPrev').onchange=async e=>{
+  const f=e.target.files[0];if(!f)return;const d=JSON.parse(await f.text());
+  for(const [n,o] of Object.entries(d.images||{})){
+    const r=R(n);r.reviewed=!!o.reviewed;r.exclude=!!o.exclude;r.missing=o.missing||0;r.note=o.note||'';r.v={};r.role={};
+    (o.instances||[]).forEach(it=>{if(it.verdict&&it.verdict!=='unreviewed')r.v[it.idx]=it.verdict;if(it.role)r.role[it.idx]=it.role});
+  }
+  save();refreshAll();
+};
+$('filter').onchange=e=>{S.filter=e.target.value;buildList()};
+$('tHole').onclick=()=>{S.show[0]=!S.show[0];$('tHole').classList.toggle('on',S.show[0]);buildInsts();draw()};
+$('tRing').onclick=()=>{S.show[1]=!S.show[1];$('tRing').classList.toggle('on',S.show[1]);buildInsts();draw()};
+$('tPoly').onclick=()=>{S.poly=!S.poly;$('tPoly').classList.toggle('on',S.poly);draw()};
+$('missing').oninput=e=>{if(S.imgName){R(S.imgName).missing=Math.max(0,+e.target.value||0);save();buildList()}};
+$('excl').onchange=e=>{if(S.imgName){R(S.imgName).exclude=e.target.checked;save();buildList()}};
+$('note').oninput=e=>{if(S.imgName){R(S.imgName).note=e.target.value;save()}};
+function allOk(){const n=S.imgName;if(!n)return;const r=R(n);insts(n).forEach((_,k)=>{if(!r.v[k])r.v[k]='ok'});save();buildInsts();buildList();draw()}
+function done(){
+  const n=S.imgName;if(!n)return;const r=R(n);
+  insts(n).forEach((_,k)=>{if(!r.v[k])r.v[k]='ok'});
+  r.reviewed=true;save();
+  let nx=S.idx+1;for(let i=0;i<S.names.length;i++){const j=(S.idx+1+i)%S.names.length;if(!S.rev[S.names[j]]?.reviewed){nx=j;break}}
+  go(nx);
+}
+$('bAllOk').onclick=allOk;$('bDone').onclick=done;
+document.addEventListener('keydown',e=>{
+  if(/INPUT|TEXTAREA|SELECT/.test(e.target.tagName)&&e.key!=='Enter')return;
+  if(e.target.tagName==='TEXTAREA')return;
+  const k=e.key;
+  if(k==='ArrowRight')go(S.idx+1);else if(k==='ArrowLeft')go(S.idx-1);
+  else if(k==='Enter'){e.preventDefault();done()}
+  else if(k==='1'||k==='2'||k==='3'||k==='0'){if(S.sel>=0)setV(S.sel,{1:'ok',2:'bad',3:'loose',0:''}[k])}
+  else if(k==='a'||k==='A')allOk();
+  else if(k==='h'||k==='H')$('tHole').click();else if(k==='r'||k==='R')$('tRing').click();
+  else if(k==='x'||k==='X'){$('excl').checked=!$('excl').checked;$('excl').onchange({target:$('excl')})}
+  else if(k==='Tab'){e.preventDefault();const L=insts(S.imgName).map((it,i)=>i).filter(i=>S.show[insts(S.imgName)[i].prompt]);if(L.length){const p=L.indexOf(S.sel);S.sel=L[(p+1)%L.length];buildInsts();draw()}}
+});
+
+function build(){
+  const out={tool:'tel_review_tool',version:1,exported:new Date().toISOString(),prompts:S.masks?.prompts||[],verdict_legend:{ok:'正確',bad:'錯誤（多餘/不是孔）',loose:'範圍不準',unreviewed:'未審'},images:{}};
+  const sum={images:S.names.length,reviewed:0,excluded:0,instances:0,ok:0,bad:0,loose:0,images_with_issue:0,missing_holes:0};
+  S.names.forEach(n=>{
+    const r=S.rev[n]||{reviewed:false,exclude:false,missing:0,note:'',v:{},role:{}};
+    const arr=insts(n).map((it,k)=>{
+      const v=r.v[k]||(r.reviewed?'ok':'unreviewed');
+      return{idx:k,prompt:it.prompt,verdict:v,role:r.role[k]||'',score:it.score,area:it.area,centroid:it.centroid};
+    });
+    out.images[n]={reviewed:r.reviewed,exclude:r.exclude,missing:r.missing,note:r.note,instances:arr};
+    if(r.reviewed)sum.reviewed++;if(r.exclude)sum.excluded++;sum.missing_holes+=r.missing||0;
+    let iss=r.missing>0;arr.forEach(a=>{sum.instances++;if(sum[a.verdict]!==undefined)sum[a.verdict]++;if(a.verdict==='bad'||a.verdict==='loose')iss=true});
+    if(iss)sum.images_with_issue++;
+  });
+  out.summary=sum;return out;
+}
+function dl(name,text,type){const a=document.createElement('a');a.href=URL.createObjectURL(new Blob([text],{type}));a.download=name;a.click()}
+const stamp=()=>new Date().toISOString().slice(0,16).replace(/[-:T]/g,'');
+$('bExp').onclick=()=>{if(!S.names.length)return alert('尚未載入資料');dl(`review_${stamp()}.json`,JSON.stringify(build(),null,1),'application/json')};
+$('bCsv').onclick=()=>{
+  if(!S.names.length)return alert('尚未載入資料');const o=build();
+  const rows=[['image','reviewed','exclude','missing','note','idx','prompt','verdict','role','score','area','cx','cy']];
+  for(const[n,im]of Object.entries(o.images)){
+    if(!im.instances.length)rows.push([n,im.reviewed,im.exclude,im.missing,im.note]);
+    im.instances.forEach(a=>rows.push([n,im.reviewed,im.exclude,im.missing,im.note,a.idx,a.prompt,a.verdict,a.role,a.score,a.area,a.centroid[0],a.centroid[1]]));
+  }
+  dl(`review_${stamp()}.csv`,'﻿'+rows.map(r=>r.map(x=>`"${String(x??'').replace(/"/g,'""')}"`).join(',')).join('\n'),'text/csv');
+};
+load();
+</script>
+</body>
+</html>

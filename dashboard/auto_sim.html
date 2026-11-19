@@ -1,0 +1,664 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>自主流程模擬器</title>
+<style>
+/* 不使用任何外部資源（比賽場地沒有網路），只用系統字型 */
+:root{--bg:#0f1318;--panel:#171d24;--panel2:#1f2730;--line:#2c3743;--txt:#e6edf3;--mute:#8b98a5;
+  --acc:#4aa3ff;--ok:#3fb950;--bad:#f85149;--warn:#d29922;--tgt:#f0883e;--robot:#c9d1d9;--cam:#f0883e;--field:#141a20}
+@media (prefers-color-scheme: light){:root:not([data-theme="dark"]){--bg:#f4f6f8;--panel:#fff;--panel2:#eef1f4;--line:#d0d7de;
+  --txt:#1f2328;--mute:#59636e;--acc:#0969da;--ok:#1a7f37;--bad:#cf222e;--warn:#9a6700;--tgt:#bc4c00;--robot:#24292f;--cam:#bc4c00;--field:#fafbfc}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--txt);font:14px/1.45 system-ui,"Microsoft JhengHei","PingFang TC",sans-serif}
+header{display:flex;flex-wrap:wrap;gap:8px 14px;align-items:center;padding:10px 16px;border-bottom:1px solid var(--line);background:var(--panel)}
+header h1{font-size:16px;margin:0 8px 0 0}
+label{display:inline-flex;gap:6px;align-items:center;color:var(--mute)}
+select,button{font:inherit;color:var(--txt);background:var(--panel2);border:1px solid var(--line);border-radius:6px;padding:4px 10px;cursor:pointer}
+button.pri{background:var(--acc);border-color:var(--acc);color:#fff;font-weight:600}
+button:disabled{opacity:.5;cursor:default}
+main{display:grid;grid-template-columns:minmax(0,1fr) minmax(320px,440px);gap:12px;padding:12px 16px}
+@media(max-width:900px){main{grid-template-columns:minmax(0,1fr)}}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:10px 12px;min-width:0}
+.card h2{font-size:13px;margin:0 0 8px;color:var(--mute);font-weight:600;display:flex;justify-content:space-between;gap:8px}
+.col{display:flex;flex-direction:column;gap:12px;min-width:0}
+canvas{display:block;width:100%}
+.kv{display:grid;grid-template-columns:auto 1fr;gap:3px 12px;font-size:13px}
+.kv b{font-weight:500;color:var(--mute)}
+.mono{font-family:ui-monospace,Consolas,monospace;font-variant-numeric:tabular-nums}
+.big{font-size:26px;font-weight:700}
+.phase{display:inline-block;padding:2px 10px;border-radius:999px;background:var(--panel2);border:1px solid var(--line);font-weight:600}
+#log{height:200px;overflow:auto;font-size:12.5px;margin:0;padding:0;list-style:none}
+#log li{padding:2px 0;border-bottom:1px solid var(--line)}
+#log .t{color:var(--mute);margin-right:6px}
+#log .w{color:var(--warn)} #log .g{color:var(--ok)} #log .r{color:var(--bad)}
+.note{font-size:12px;color:var(--mute);margin:6px 0 0}
+.stats{display:flex;gap:16px;flex-wrap:wrap}
+.stats div{min-width:70px}
+.stats small{display:block;color:var(--mute);font-size:12px}
+</style>
+</head>
+<body>
+<header>
+  <h1>自主流程模擬器</h1>
+  <label>起始框 <select id="side"><option value="1">左起始框</option><option value="-1">右起始框</option></select></label>
+  <label>射擊策略 <select id="strat"></select></label>
+  <label>速度 <select id="speed"><option>0.5</option><option selected>1</option><option>2</option><option>4</option><option>8</option></select>×</label>
+  <button class="pri" id="btnStart">開始</button>
+  <button id="btnPause" disabled>暫停</button>
+  <button id="btnReset">重置</button>
+  <button id="btnPush" disabled title="把機器人推開 15 cm（輪子只感覺到 30%，里程計會偏）">推一下</button>
+  <label><input type="checkbox" id="optShake" checked>送球前晃底盤</label>
+  <label><input type="checkbox" id="optLive" checked>即時影像修正</label>
+  <label><input type="checkbox" id="optAlign" checked>影像定位修正</label>
+  <label><input type="checkbox" id="optNoise" checked>隨機誤差</label>
+</header>
+<main>
+  <div class="col">
+    <section class="card">
+      <h2><span>場地（上方是九宮格，+X 朝上、+Y 朝左，單位公尺）</span><span class="mono" id="poseTxt"></span></h2>
+      <canvas id="field"></canvas>
+      <p class="note">實線方塊 = 機器人實際位置；虛線方塊 = 里程計以為的位置。橘色邊 = 相機／發射口那面，橘線 = 發射方向。</p>
+    </section>
+  </div>
+  <div class="col">
+    <section class="card">
+      <div class="stats">
+        <div><small>時間</small><span class="big mono" id="clock">0.0</span><small id="clockNote">s（規則：前 60 秒自主）</small></div>
+        <div><small>已射</small><span class="big mono" id="fired">0</span><small id="firedMax">/ 27</small></div>
+        <div><small>進球</small><span class="big mono" id="hits">0</span></div>
+        <div><small>得分（估）</small><span class="big mono" id="score">0</span></div>
+      </div>
+      <div style="margin-top:8px"><span class="phase" id="phase">待命</span></div>
+    </section>
+    <section class="card">
+      <h2><span>九宮格正面</span><span id="boardNote"></span></h2>
+      <canvas id="board"></canvas>
+      <p class="note">數字 = 進球／射擊。點 = 落點（綠進、紅沒進）。紅圈 = 亮燈小孔。</p>
+    </section>
+    <section class="card">
+      <h2>目前狀態</h2>
+      <div class="kv mono" id="kv"></div>
+    </section>
+    <section class="card">
+      <h2>事件</h2>
+      <ul id="log"></ul>
+    </section>
+  </div>
+</main>
+<script>
+"use strict";
+// ============ 參數：全部取自 robot_code（Constants.java / ShotTable.java / AutoShoot.java） ============
+const C = {
+  boardX: 7.5, colM: 0.90,                      // 九宮格板面 X、孔左右間距
+  shootX: 3.5, shootY: -0.17,                   // 射擊定點（kShootY = -kCameraLeftM）
+  startX: 0.93, startAbsY: 1.57,                // 起始框靠中線的前角
+  camF: 0.14, camL: 0.17,                       // 相機（＝發射口）在車身中心前 14 cm、左 17 cm（以相機那面當車頭）
+  half: 0.25,                                   // 機器人 50x50 cm
+  modBL: [-0.25, 0.25],                         // 左後模組（晃底盤的旋轉中心，底盤程式座標）
+  drive: { vmax: 1.9, vmin: 0.15, acc: 3.5, tol: 0.05, kpH: 4.0, wmax: 2.0, timeout: 8.0 },
+  settle: 0.3,
+  align: { tol: 0.03, iters: 3, timeout: 5.0, stillV: 0.03, stillW: 0.05, settle: 0.25, lat: 0.15, maxErr: 0.6 },
+  aim: { kp: 4.0, wmax: 1.5, alpha: 6.0, wmin: 0.12, tolDeg: 1.0, bias: 1.0 },
+  feed: 0.8, feedAfter: 0.4, cool: 0.3, prep: 0.2, readyTO: 5.0, waitVision: 5.0, waitLock: 2.0,
+  live: { settleW: 0.05, settleV: 0.05, lat: 0.10, samples: 3, fps: 13, dead: 0.6, maxCorr: 8,
+          fallback: 0.8, maxWait: 4.0, maxWaitSettle: 0.3, maxN: 5, elevDead: 0.5, elevMaxCorr: 8 },
+  hold: { dead: 0.03, kp: 2.0, vmin: 0.05, vmax: 0.5 },
+  shake: { deg: 10, reach: 3, stepTO: 1.2, kp: 4.0, wmax: 1.5, alpha: 16, retTol: 0.01, retV: 0.5, retTO: 1.5 },
+  hoodMax: 39.5, jamExtra: 2, shooterRps: 88,
+  replanPose: 0.12, replanMax: 0.4, replanMove: 0.10,
+  order: [10, 9, 11, 7, 6, 8, 4, 3, 5],         // kBigHoleOrder：由下往上
+  table: [1.0, 38.5, 31.0, 21.5],               // ShotTable 各排仰角（row 0 小孔排還沒量，佔位值）
+  holeYaw:  [0, 0, 0, -0.5, 0, 0.5, -1.5, 0, 1.5, -1.5, 0, 1.5],
+  holeElev: [0, 0, 0, 1.5, 0, 1.5, 0, 0, 0, 0.5, 0, 0.5],
+};
+const STRATS = [   // AutoShoot.Strategy
+  { label: "上半場 27 顆（放棄紅燈格）", max: 27, lit: 0, perHole: 3, passes: 1, half: 1 },
+  { label: "下半場 9 顆 每孔 1 顆（剩下手動補）", max: 9, lit: 0, perHole: 1, passes: 1, half: 2 },
+  { label: "下半場 18 顆 紅燈格 + 連線", max: 18, lit: 2, perHole: 2, passes: 2, half: 2 },
+];
+// ---- 模擬用的假設（程式裡沒有，屬於物理世界）----
+const SIM = {
+  dt: 0.02,                 // 50 Hz，與 roboRIO 相同
+  visionUpSec: 0.6,         // 開相機到視覺上線
+  lockSec: 0.6,             // 停著看到全部孔多久才鎖定
+  hoodSpeed: 60,            // 仰角機構 °/s
+  hoodTol: 0.5,             // 仰角到位容許（°）
+  shooterAcc: 70,           // 發射輪 RPS/s
+  holeR: [0.05, 0.11],      // 判定進球的有效半徑（m）：小孔、大孔（假設值）
+  jamProb: 0.06,            // 送球卡住的機率
+};
+const rad = d => d * Math.PI / 180, deg = r => r * 180 / Math.PI;
+const clamp = (v, a, b) => Math.min(b, Math.max(a, v));
+const wrap = a => Math.atan2(Math.sin(a), Math.cos(a));
+const gauss = () => { let u = 0, v = 0; while (!u) u = Math.random(); while (!v) v = Math.random(); return Math.sqrt(-2 * Math.log(u)) * Math.cos(2 * Math.PI * v); };
+const holeY = i => (1 - i % 3) * C.colM;
+const rowOf = i => Math.floor(i / 3);
+
+// ============ 狀態 ============
+let S, running = false, raf = 0;
+const $ = id => document.getElementById(id);
+STRATS.forEach((s, i) => $("strat").add(new Option(s.label, i)));
+$("strat").value = 0;
+
+function opt() { return { shake: $("optShake").checked, live: $("optLive").checked, align: $("optAlign").checked, noise: $("optNoise").checked }; }
+function N(sigma) { return S.opt.noise ? gauss() * sigma : 0; }
+
+function reset() {
+  const side = +$("side").value, st = STRATS[+$("strat").value];
+  S = {
+    t: 0, side, st, opt: opt(),
+    truth: { x: C.startX, y: side * C.startAbsY, th: -Math.PI / 2 },
+    off: { x: 0, y: 0 },                        // 里程計 - 實際
+    vel: { vx: 0, vy: 0, w: 0 }, cmd: { vx: 0, vy: 0, w: 0, cor: null },
+    hood: { pos: 0, vel: 0, target: 0 }, rps: 0, rpsTarget: 0,
+    cam: false, camOnAt: 0, stillSince: 0, lock: null,
+    lit: Math.floor(Math.random() * 3),
+    hoodZeroErr: 0, slip: { a: 0, b: 0, c: 0, d: 0 },
+    fired: 0, hitsTotal: 0, made: Array(12).fill(0), tries: Array(12).fill(0), marks: [],
+    aim: null, hold: null, phase: "待命", liveStatus: "—", chassis: "—", target: -1, aimSource: "—",
+    balls: [], trail: [], log: [], done: false, gen: null, headErr: 0,
+  };
+  S.hoodZeroErr = N(1.2);   // 仰角開機時靠手擺歸零，每次都差一點
+  S.slip = { a: N(0.025), b: N(0.025), c: N(0.025), d: N(0.025) };
+  $("firedMax").textContent = "/ " + st.max;
+  $("log").innerHTML = "";
+  S.gen = match();
+  running = false;
+  $("btnStart").disabled = false; $("btnStart").textContent = "開始";
+  $("btnPause").disabled = true; $("btnPush").disabled = true;
+  render();
+}
+
+function log(msg, cls = "") {
+  const li = document.createElement("li");
+  li.innerHTML = `<span class="t mono">${S.t.toFixed(1)}s</span><span class="${cls}"></span>`;
+  li.lastChild.textContent = msg;
+  $("log").prepend(li);
+}
+const odo = () => ({ x: S.truth.x + S.off.x, y: S.truth.y + S.off.y, th: S.truth.th });
+const camPos = (p, phi) => ({ x: p.x + C.camF * Math.cos(phi) - C.camL * Math.sin(phi), y: p.y + C.camF * Math.sin(phi) + C.camL * Math.cos(phi) });
+const zero = () => { S.cmd = { vx: 0, vy: 0, w: 0, cor: null }; };
+const still = (v = 0.05, w = 0.05) => Math.hypot(S.vel.vx, S.vel.vy) < v && Math.abs(S.vel.w) < w;
+const visionUp = () => S.cam && S.t - S.camOnAt >= SIM.visionUpSec;
+
+// ============ 指令（generator：每 yield 一次 = 一個 20 ms 週期） ============
+function* wait(sec) { const end = S.t + sec - 1e-9; while (S.t < end) yield; }
+function* waitUntil(fn, to = 1e9) { const end = S.t + to; while (!fn() && S.t < end) yield; return fn(); }
+
+function* match() {
+  S.phase = "移動"; S.cam = false;
+  log(`開始：${S.side > 0 ? "左" : "右"}起始框，策略「${S.st.label}」`);
+  yield* autoDrive(C.shootX, C.shootY);
+  S.phase = "到位，等車身停穩"; zero();
+  yield* wait(C.settle);
+  S.cam = true; S.camOnAt = S.t;
+  log("開相機（Vision/enable = true）");
+  if (S.opt.align) { S.phase = "影像定位修正"; yield* visionAlign(); }
+  S.phase = "辨識與射擊";
+  yield* autoShoot();
+  S.aim = null; zero(); S.rpsTarget = 0;
+  S.phase = "自動打完，已交給手動"; S.done = true;
+  log(`自動打完：射 ${S.fired} 顆、進 ${S.hitsTotal} 顆，用時 ${S.t.toFixed(1)} 秒${S.t > 60 ? "（超過 60 秒）" : ""}`, S.t > 60 ? "w" : "g");
+}
+
+function* autoDrive(tx, ty) {   // AutoDrive.java
+  let sp = 0; const t0 = S.t; S.driving = true;
+  for (;;) {
+    const p = odo(), dx = tx - p.x, dy = ty - p.y, dist = Math.hypot(dx, dy);
+    if (dist < C.drive.tol) break;
+    if (S.t - t0 > C.drive.timeout) { log(`AutoDrive 逾時，離定點還差 ${dist.toFixed(2)} m`, "w"); break; }
+    let desired = Math.max(Math.min(C.drive.vmax, Math.sqrt(2 * C.drive.acc * dist)), C.drive.vmin);
+    sp = clamp(desired, sp - C.drive.acc * SIM.dt, sp + C.drive.acc * SIM.dt);
+    const he = wrap(-Math.PI / 2 - p.th);
+    S.cmd = { vx: sp * dx / dist, vy: sp * dy / dist, w: clamp(C.drive.kpH * he, -C.drive.wmax, C.drive.wmax), cor: null };
+    yield;
+  }
+  S.driving = false; zero();
+  log(`到達射擊定點（里程計），用時 ${(S.t - t0).toFixed(2)} 秒`);
+}
+
+function measurePose(sigma) { return { x: S.truth.x + N(sigma), y: S.truth.y + N(sigma) }; }
+
+function* driveTo(tx, ty, tol, to) {   // 低速平移補位（車頭維持朝九宮格）
+  const t0 = S.t;
+  for (;;) {
+    const p = odo(), dx = tx - p.x, dy = ty - p.y, d = Math.hypot(dx, dy);
+    if (d < tol || S.t - t0 > to) break;
+    const v = clamp(C.hold.kp * d, C.hold.vmin, C.hold.vmax);
+    S.cmd = { vx: v * dx / d, vy: v * dy / d, w: clamp(4 * wrap(-Math.PI / 2 - p.th), -1.5, 1.5), cor: null };
+    yield;
+  }
+  zero();
+}
+
+function* visionAlign() {   // VisionAlign：九宮格量真正位置 → 改寫里程計 → 平移補到射擊點
+  const t0 = S.t, left = () => C.align.timeout - (S.t - t0);
+  if (!(yield* waitUntil(visionUp, 1.5))) { log("影像定位：視覺沒上線，跳過", "w"); return; }
+  for (let it = 0; it < C.align.iters && left() > 0; it++) {
+    zero();
+    let since = null;
+    while (left() > 0) {
+      if (still(C.align.stillV, C.align.stillW)) { since ??= S.t; if (S.t - since >= C.align.settle + C.align.lat) break; } else since = null;
+      yield;
+    }
+    const m = measurePose(0.02), o = odo(), err = Math.hypot(m.x - o.x, m.y - o.y);
+    if (err > C.align.maxErr) { log(`影像定位：和里程計差 ${(err * 100).toFixed(0)} cm，不相信`, "w"); return; }
+    S.off = { x: m.x - S.truth.x, y: m.y - S.truth.y };
+    const d = Math.hypot(C.shootX - m.x, C.shootY - m.y);
+    log(`影像定位第 ${it + 1} 次：里程計偏了 ${(err * 100).toFixed(1)} cm，離射擊點 ${(d * 100).toFixed(1)} cm`);
+    if (d < C.align.tol) break;
+    yield* driveTo(C.shootX, C.shootY, C.align.tol * 0.5, Math.max(0.1, left()));
+  }
+}
+
+function* autoShoot() {   // AutoShoot.build
+  const st = S.st;
+  S.fired = 0; S.rowTrim = [0, 0, 0, 0];
+  const p = odo(); S.hold = { x: p.x, y: p.y };
+  if (!(yield* waitUntil(visionUp, C.waitVision))) log("視覺沒上線", "w");
+  const locked = yield* waitUntil(() => S.lock !== null, C.waitLock);
+  S.aimSource = locked ? "鎖定板位" : "即時視覺（沒鎖定）";
+  log(`瞄準來源：${S.aimSource}`);
+  if (st.lit > 0) {
+    yield* waitUntil(() => visionUp() && S.t - S.camOnAt > SIM.visionUpSec + 0.5, 2.0);
+    log(`認出亮燈小孔：孔 ${S.lit}（欄 ${S.lit}）`);
+    log("注意：小孔排的 ShotTable 還沒實測，這裡假設查表值就打得進", "w");
+    yield* shootAt(S.lit, st.lit);
+  }
+  for (let pass = 0; pass < st.passes; pass++)
+    for (const idx of C.order) yield* shootAt(idx, st.perHole / st.passes);
+}
+
+const yawBias = i => C.aim.bias + C.holeYaw[i];
+function requiredHood(i) { return Math.min(90, C.table[rowOf(i)] + C.holeElev[i] + S.hoodZeroErr); }
+
+function aimGeom(p, hx, hy) {   // 讓發射口（不在車身中心）對準孔的相機朝向
+  let phi = Math.atan2(hy - p.y, hx - p.x);
+  for (let k = 0; k < 6; k++) { const c = camPos(p, phi); phi = Math.atan2(hy - c.y, hx - c.x); }
+  const c = camPos(p, phi);
+  return { phi, dist: Math.hypot(hx - c.x, hy - c.y) };
+}
+
+function planAim(idx) {
+  const p = odo();
+  const hx = S.lock ? S.lock[idx].x : C.boardX + S.off.x, hy = S.lock ? S.lock[idx].y : holeY(idx) + S.off.y;
+  const g = aimGeom(p, hx, hy);
+  const target = wrap(g.phi - Math.PI / 2 - rad(yawBias(idx)));
+  const row = rowOf(idx), table = C.table[row];
+  return {
+    idx, row, initial: target, target, tableHood: table,
+    hoodDeg: Math.min(table + (S.opt.live ? S.rowTrim[row] : 0) + C.holeElev[idx], C.hoodMax),
+    dist: g.dist, planX: p.x, planY: p.y,
+    settledSince: null, confirmed: false, firing: false, shaking: false, returningSince: null,
+    shakeRad: 0, corrections: 0, startTime: S.t, lastW: 0, wasShaking: false,
+  };
+}
+
+function relocalize() {
+  if (!still(0.03, 0.05)) return false;
+  const m = measurePose(0.03), o = odo(), err = Math.hypot(m.x - o.x, m.y - o.y);
+  if (err <= C.replanPose) return false;
+  if (err > C.replanMax) { log(`影像位置和里程計差 ${(err * 100).toFixed(0)} cm，太多，不相信`, "w"); return false; }
+  const dx = m.x - o.x, dy = m.y - o.y;
+  S.off = { x: m.x - S.truth.x, y: m.y - S.truth.y };
+  if (S.hold) { S.hold.x += dx; S.hold.y += dy; }
+  S.lock = boardLock();
+  log(`里程計偏了 ${(err * 100).toFixed(0)} cm，已用影像改寫`, "w");
+  return true;
+}
+function boardLock() { return Array.from({ length: 12 }, (_, i) => ({ x: C.boardX, y: holeY(i) })); }
+
+function* shootAt(idx, shots) {
+  if (S.fired >= S.st.max) return;
+  relocalize();
+  const aim = planAim(idx);
+  S.aim = aim; S.target = idx; S.rpsTarget = C.shooterRps;
+  log(`目標 孔 ${idx}（第 ${aim.row} 排、${["左", "中", "右"][idx % 3]}欄）：距離 ${aim.dist.toFixed(2)} m、仰角 ${aim.hoodDeg.toFixed(1)}°`);
+  let hit = 0, jamFails = 0;
+  const aimed = () => Math.abs(wrap(aim.target - S.truth.th)) < rad(C.aim.tolDeg);
+  const ready = () => Math.abs(S.rps - C.shooterRps) < 2 && hoodAt() && aimed() && okToFire(aim);
+  yield* wait(C.prep);
+  for (let i = 0; i < shots + C.jamExtra; i++) {
+    const extra = i - shots + 1;
+    if (!(hit < shots && S.fired < S.st.max && (extra <= 0 || jamFails >= extra))) continue;
+    if (i > 0) replanIfMoved(aim);
+    if (S.opt.shake) yield* shake(aim);
+    const ok = yield* waitUntil(ready, C.readyTO);
+    if (!(ok && S.fired < S.st.max)) { log("未到位（車頭/仰角/轉速），這一發不射", "w"); continue; }
+    // fire()
+    aim.firing = true;
+    const jam = Math.random() < (S.opt.noise ? SIM.jamProb : 0);
+    yield* wait(jam ? 0.9 : 0.45);
+    if (!jam) launch(aim);
+    yield* wait(Math.max(C.feedAfter, C.feed - (jam ? 0.9 : 0.45)));
+    if (jam) { jamFails++; log("Feeder 卡球沒送出，這一發不算，同一孔補射", "w"); }
+    else { S.fired++; hit++; }
+    yield* wait(C.cool);
+    aim.firing = false; aim.confirmed = false; aim.corrections = 0; aim.settledSince = null; aim.startTime = S.t;
+  }
+  S.aim = null; zero();
+}
+
+function replanIfMoved(aim) {
+  const relocated = relocalize();
+  const p = odo(), moved = Math.hypot(p.x - aim.planX, p.y - aim.planY);
+  const fresh = planAim(aim.idx);
+  if (relocated || moved > C.replanMove || Math.abs(fresh.dist - aim.dist) > 0.15) {
+    Object.assign(aim, { initial: fresh.initial, target: fresh.target, tableHood: fresh.tableHood, hoodDeg: fresh.hoodDeg,
+      dist: fresh.dist, planX: fresh.planX, planY: fresh.planY, confirmed: false, corrections: 0, settledSince: null, startTime: S.t });
+    log(`孔 ${aim.idx} 位置變了（位移 ${moved.toFixed(2)} m），重新規劃瞄準`, "w");
+  }
+}
+
+function* shake(aim) {
+  aim.shaking = true;
+  for (const sign of [1, -1, 0]) {
+    aim.shakeRad = sign * rad(C.shake.deg);
+    const travel = rad(C.shake.deg) * (sign === -1 ? 2 : 1);
+    const to = Math.max(C.shake.stepTO, 2 * Math.sqrt(travel / C.shake.alpha) + 0.3);
+    yield* waitUntil(() => Math.abs(wrap(aim.target + aim.shakeRad - S.truth.th)) < rad(C.shake.reach), to);
+  }
+  aim.shakeRad = 0; aim.shaking = false;
+  aim.confirmed = false; aim.corrections = 0; aim.settledSince = null; aim.startTime = S.t;
+}
+
+function okToFire(aim) {
+  if (!S.opt.live || aim.confirmed) return true;
+  if (aim.settledSince === null) return false;
+  const settledFor = S.t - aim.settledSince;
+  if (S.t - aim.startTime > C.live.maxWait && settledFor > C.live.maxWaitSettle) return true;
+  return settledFor > C.live.fallback;
+}
+const hoodAt = () => Math.abs(S.hood.pos - S.hood.target) < SIM.hoodTol;
+
+// 視覺量到的偏角（孔在相機右邊為正）
+function measureBearing(idx) {
+  const phi = S.truth.th + Math.PI / 2, c = camPos(S.truth, phi);
+  return deg(wrap(phi - Math.atan2(holeY(idx) - c.y, C.boardX - c.x))) + N(0.12);
+}
+
+// 每週期：底盤原地轉向瞄準＋守點＋即時影像修正（AutoShoot.aimCommand / updateLiveAim）
+function aimTick(aim) {
+  if (aim.wasShaking && !aim.shaking && S.hold) aim.returningSince = S.t;
+  aim.wasShaking = aim.shaking;
+  S.hood.target = aim.hoodDeg;
+  if (S.opt.live) updateLiveAim(aim);
+  const p = odo();
+  const err = wrap(aim.target + aim.shakeRad - p.th);
+  let w = 0;
+  if (Math.abs(err) > rad(C.aim.tolDeg) * 0.5) {
+    const kp = aim.shaking ? C.shake.kp : C.aim.kp, mx = aim.shaking ? C.shake.wmax : C.aim.wmax;
+    w = clamp(kp * err + Math.sign(err) * C.aim.wmin, -mx, mx);
+  }
+  const alpha = aim.shaking ? C.shake.alpha : C.aim.alpha, md = alpha * SIM.dt;
+  w = clamp(w, aim.lastW - md, aim.lastW + md);
+  aim.lastW = w; S.headErr = deg(err);
+  if (aim.firing) { aim.lastW = 0; zero(); S.chassis = "送球中，輪子打叉"; return; }
+  if (aim.shaking) { S.cmd = { vx: 0, vy: 0, w, cor: C.modBL }; S.chassis = "送球前晃底盤（繞左後模組）"; return; }
+  let vx = 0, vy = 0;
+  const dx = S.hold.x - p.x, dy = S.hold.y - p.y, d = Math.hypot(dx, dy);
+  let returning = aim.returningSince !== null;
+  if (returning && (d < C.shake.retTol || S.t - aim.returningSince > C.shake.retTO)) { aim.returningSince = null; returning = false; }
+  const dead = returning ? C.shake.retTol * 0.5 : C.hold.dead, mv = returning ? C.shake.retV : C.hold.vmax;
+  if (d > dead) { const v = clamp(C.hold.kp * d, C.hold.vmin, mv); vx = v * dx / d; vy = v * dy / d; }
+  S.chassis = returning ? "晃完，開回原位" : (vx || vy) ? "被推開，開回守點" : "守點";
+  S.cmd = { vx, vy, w, cor: null };
+}
+
+function updateLiveAim(aim) {
+  const heading = S.truth.th;
+  const settled = !aim.firing && !aim.shaking && aim.returningSince === null
+    && Math.abs(wrap(aim.target - heading)) < rad(C.aim.tolDeg)
+    && Math.abs(S.vel.w) < C.live.settleW && Math.hypot(S.vel.vx, S.vel.vy) < C.live.settleV
+    && hoodAt() && Math.abs(S.hood.vel) < 1.0;
+  if (!settled) aim.settledSince = null; else aim.settledSince ??= S.t;
+  if (aim.settledSince === null) { S.liveStatus = aim.firing ? "送球中" : aim.shaking ? "送球前晃底盤" : "轉向／等仰角"; return; }
+  const since = aim.settledSince + C.live.lat;
+  if (S.t < since + C.live.samples / C.live.fps || !visionUp()) {
+    S.liveStatus = okToFire(aim) && !aim.confirmed ? "沒有新的影像，用鎖定角度" : "停穩，等新的影像"; return;
+  }
+  const yawErr = measureBearing(aim.idx) + yawBias(aim.idx);
+  const yawOk = Math.abs(yawErr) <= C.live.dead;
+  const newTarget = wrap(heading - rad(yawErr));
+  const yawBad = Math.abs(wrap(newTarget - aim.initial)) > rad(C.live.maxCorr);
+  const elevErr = requiredHood(aim.idx) - S.hood.pos + N(0.1);
+  let elevOk = Math.abs(elevErr) <= C.live.elevDead, atLimit = false;
+  const newHood = clamp(aim.hoodDeg + elevErr, 0, C.hoodMax);
+  const elevBad = Math.abs(newHood - aim.tableHood) > C.live.elevMaxCorr;
+  if (!elevOk && Math.abs(newHood - aim.hoodDeg) < 1e-6) { elevOk = true; atLimit = true; }
+  if (yawOk && elevOk) {
+    if (!aim.confirmed) S.rowTrim[aim.row] = aim.hoodDeg - aim.tableHood - C.holeElev[aim.idx];
+    aim.confirmed = true;
+    S.liveStatus = atLimit ? "仰角到上限（還差一點），直接發射" : "影像確認";
+  } else if (aim.corrections >= C.live.maxN) {
+    aim.confirmed = true; S.liveStatus = "修正次數到上限，直接發射";
+  } else if ((!yawOk && yawBad) || (!elevOk && elevBad)) {
+    S.liveStatus = "修正量太大，不採用";
+  } else {
+    if (!yawOk) aim.target = newTarget;
+    if (!elevOk) aim.hoodDeg = newHood;
+    aim.confirmed = false; aim.settledSince = null; aim.corrections++;
+    S.liveStatus = "修正中";
+    log(`  影像修正 #${aim.corrections}：左右 ${yawErr >= 0 ? "+" : ""}${yawErr.toFixed(2)}°、仰角 ${elevErr >= 0 ? "+" : ""}${elevErr.toFixed(2)}°`);
+  }
+}
+
+// 發射：依「實際」車身姿態、仰角算落點
+function launch(aim) {
+  const i = aim.idx, phi = S.truth.th + Math.PI / 2, c = camPos(S.truth, phi);
+  const toHole = Math.atan2(holeY(i) - c.y, C.boardX - c.x), dist = Math.hypot(holeY(i) - c.y, C.boardX - c.x);
+  const latErr = wrap(phi + rad(yawBias(i)) + rad(N(0.35)) - toHole);      // 球往左偏 yawBias（所以要補償）
+  const lat = dist * Math.tan(latErr);                                        // 正 = 落在孔的左邊
+  const vert = dist * Math.tan(rad(S.hood.pos - requiredHood(i) + N(0.3))) * 0.8;
+  const r = SIM.holeR[i < 3 ? 0 : 1], ok = Math.hypot(lat, vert) < r;
+  S.tries[i]++; if (ok) { S.made[i]++; S.hitsTotal++; }
+  S.marks.push({ i, lat, vert, ok });
+  S.balls.push({ x0: c.x, y0: c.y, x1: C.boardX, y1: holeY(i) + lat, t0: S.t, ok });
+  log(`發射 → 孔 ${i}：${ok ? "進" : "沒進"}（左右 ${(lat * 100).toFixed(1)} cm、上下 ${(vert * 100).toFixed(1)} cm）`, ok ? "g" : "r");
+}
+
+// ============ 物理 ============
+function physics() {
+  const dt = SIM.dt, th = S.truth.th;
+  let { vx, vy, w, cor } = S.cmd;
+  if (cor) {   // 繞指定點旋轉：車身中心多一個 ω × (C − P) 的速度
+    const rx = cor[0] * Math.cos(th) - cor[1] * Math.sin(th), ry = cor[0] * Math.sin(th) + cor[1] * Math.cos(th);
+    vx += w * ry; vy += -w * rx;
+  }
+  const amax = 6 * dt, wmax = 25 * dt;
+  S.vel.vx = clamp(vx, S.vel.vx - amax, S.vel.vx + amax);
+  S.vel.vy = clamp(vy, S.vel.vy - amax, S.vel.vy + amax);
+  S.vel.w = clamp(w, S.vel.w - wmax, S.vel.w + wmax);
+  S.truth.x += S.vel.vx * dt; S.truth.y += S.vel.vy * dt; S.truth.th = wrap(th + S.vel.w * dt);
+  if (S.driving) {   // 開場高速移動時輪子打滑，里程計累積誤差
+    S.off.x += (S.slip.a * S.vel.vx + S.slip.b * S.vel.vy) * dt;
+    S.off.y += (S.slip.c * S.vel.vx + S.slip.d * S.vel.vy) * dt;
+  }
+  const hv = clamp(S.hood.target - S.hood.pos, -SIM.hoodSpeed * dt, SIM.hoodSpeed * dt);
+  S.hood.pos += hv; S.hood.vel = hv / dt;
+  S.rps = clamp(S.rpsTarget, S.rps - SIM.shooterAcc * dt, S.rps + SIM.shooterAcc * dt);
+  // 板子鎖定：停著、視覺上線、看到全部孔一段時間 -> 用（含誤差的）里程計記住孔的場地位置
+  if (visionUp() && still()) { if (S.t - S.stillSince > SIM.lockSec && !S.lock)
+      { S.lock = Array.from({ length: 12 }, (_, i) => ({ x: C.boardX + S.off.x + N(0.02), y: holeY(i) + S.off.y + N(0.02) })); log("板子鎖定（看到全部 12 孔）"); } }
+  else S.stillSince = S.t;
+  if (Math.round(S.t / dt) % 5 === 0) { S.trail.push([S.truth.x, S.truth.y]); if (S.trail.length > 2000) S.trail.shift(); }
+  S.t += dt;
+}
+
+function step() {
+  if (!S.done) { if (S.gen.next().done) S.done = true; }
+  if (S.aim) aimTick(S.aim);
+  physics();
+}
+
+// ============ 畫面 ============
+const fc = $("field"), bc = $("board");
+const css = n => getComputedStyle(document.documentElement).getPropertyValue(n).trim();
+const F = { xMin: -0.3, xMax: 8.1, yMax: 2.4 };
+function fitCanvas(cv, ratio) {
+  const w = cv.clientWidth, h = Math.round(w * ratio), dpr = devicePixelRatio || 1;
+  if (cv.width !== Math.round(w * dpr) || cv.height !== Math.round(h * dpr)) { cv.width = w * dpr; cv.height = h * dpr; cv.style.height = h + "px"; }
+  const g = cv.getContext("2d"); g.setTransform(dpr, 0, 0, dpr, 0, 0); return { g, w, h };
+}
+function drawField() {
+  const maxH = Math.max(420, window.innerHeight - 160);
+  fc.style.maxWidth = Math.round(maxH * (2 * F.yMax) / (F.xMax - F.xMin)) + "px"; fc.style.margin = "0 auto";
+  const { g, w, h } = fitCanvas(fc, (F.xMax - F.xMin) / (2 * F.yMax));
+  const s = w / (2 * F.yMax), P = (x, y) => [(F.yMax - y) * s, (F.xMax - x) * s];
+  const line = css("--line"), mute = css("--mute");
+  g.fillStyle = css("--field"); g.fillRect(0, 0, w, h);
+  const rect = (x1, y1, x2, y2) => { const [a, b] = P(x2, y2), [c, d] = P(x1, y1); return [a, b, c - a, d - b]; };
+  g.fillStyle = css("--panel2"); g.strokeStyle = line; g.lineWidth = 2;
+  g.fillRect(...rect(0, -2, 5, 2)); g.strokeRect(...rect(0, -2, 5, 2));
+  g.setLineDash([6, 5]); g.lineWidth = 1.2; g.strokeRect(...rect(5, -2, C.boardX, 2)); g.setLineDash([]);
+  g.font = "11px system-ui"; g.fillStyle = mute;
+  for (const sd of [1, -1]) { g.strokeRect(...rect(0, sd > 0 ? 1.3 : -2.0, 1.2, sd > 0 ? 2.0 : -1.3)); const [tx, ty] = P(0.6, sd * 1.65); g.textAlign = "center"; g.fillText(sd > 0 ? "左起始框" : "右起始框", tx, ty + 30); }
+  g.strokeStyle = mute; g.lineWidth = 4; g.beginPath(); g.moveTo(...P(5, 2)); g.lineTo(...P(5, -2)); g.stroke();
+  g.textAlign = "right"; g.fillText("檔板 X=5.0", P(5, -2)[0] - 4, P(5, -2)[1] - 6);
+  g.textAlign = "center"; g.fillText("作業區 5 × 4 m", ...P(2.5, 0));
+  // 射擊點
+  const [sx, sy] = P(C.shootX, C.shootY); g.strokeStyle = css("--acc"); g.lineWidth = 1.5;
+  g.beginPath(); g.moveTo(sx - 7, sy); g.lineTo(sx + 7, sy); g.moveTo(sx, sy - 7); g.lineTo(sx, sy + 7); g.stroke();
+  g.fillStyle = css("--acc"); g.textAlign = "left"; g.fillText("射擊點", sx + 9, sy + 4);
+  // 九宮格板
+  g.strokeStyle = mute; g.lineWidth = 7; g.lineCap = "round"; g.beginPath(); g.moveTo(...P(C.boardX, 1.3)); g.lineTo(...P(C.boardX, -1.3)); g.stroke(); g.lineCap = "butt";
+  for (let c = 0; c < 3; c++) { const [hx, hy] = P(C.boardX, (1 - c) * C.colM); g.fillStyle = S.target >= 0 && S.target % 3 === c ? css("--tgt") : css("--bg"); g.beginPath(); g.arc(hx, hy, 5, 0, 7); g.fill(); }
+  g.fillStyle = mute; g.textAlign = "center"; g.fillText("九宮格 X=7.5", P(C.boardX, 0)[0], P(C.boardX, 0)[1] - 12);
+  // 軌跡
+  if (S.trail.length > 1) { g.strokeStyle = css("--acc"); g.globalAlpha = .45; g.lineWidth = 1.5; g.beginPath(); S.trail.forEach(([x, y], k) => k ? g.lineTo(...P(x, y)) : g.moveTo(...P(x, y))); g.stroke(); g.globalAlpha = 1; }
+  // 守點
+  if (S.hold && S.aim) { const [hx, hy] = P(S.hold.x, S.hold.y); g.strokeStyle = css("--ok"); g.lineWidth = 1; g.beginPath(); g.arc(hx, hy, C.hold.dead * s, 0, 7); g.stroke(); }
+  // 機器人
+  const robot = (p, ghost) => {
+    const th = p.th, phi = th + Math.PI / 2, [cx, cy] = P(p.x, p.y);
+    const corner = (f, l) => P(p.x + f * Math.cos(phi) - l * Math.sin(phi), p.y + f * Math.sin(phi) + l * Math.cos(phi));
+    const pts = [corner(C.half, C.half), corner(C.half, -C.half), corner(-C.half, -C.half), corner(-C.half, C.half)];
+    g.beginPath(); pts.forEach((q, k) => k ? g.lineTo(...q) : g.moveTo(...q)); g.closePath();
+    if (ghost) { g.setLineDash([4, 4]); g.strokeStyle = mute; g.lineWidth = 1.2; g.stroke(); g.setLineDash([]); return; }
+    g.fillStyle = css("--panel"); g.fill(); g.strokeStyle = css("--robot"); g.lineWidth = 2; g.stroke();
+    g.strokeStyle = css("--cam"); g.lineWidth = 4; g.beginPath(); g.moveTo(...pts[0]); g.lineTo(...pts[1]); g.stroke();
+    const c = camPos(p, phi), [ccx, ccy] = P(c.x, c.y);
+    // 發射方向
+    const cosr = Math.cos(phi), L = cosr > 0.05 ? (C.boardX - c.x) / cosr : 1.0;
+    const [ex, ey] = P(c.x + L * Math.cos(phi), c.y + L * Math.sin(phi));
+    g.strokeStyle = css("--cam"); g.lineWidth = 1; g.globalAlpha = .7; g.setLineDash([3, 4]);
+    g.beginPath(); g.moveTo(ccx, ccy); g.lineTo(ex, ey); g.stroke(); g.setLineDash([]); g.globalAlpha = 1;
+    g.fillStyle = css("--cam"); g.beginPath(); g.arc(ccx, ccy, 3.5, 0, 7); g.fill();
+    // 左後模組（晃動旋轉中心）
+    const m = { x: p.x + C.modBL[0] * Math.cos(th) - C.modBL[1] * Math.sin(th), y: p.y + C.modBL[0] * Math.sin(th) + C.modBL[1] * Math.cos(th) };
+    const [mx, my] = P(m.x, m.y); g.fillStyle = mute; g.beginPath(); g.arc(mx, my, 2.5, 0, 7); g.fill();
+  };
+  robot(odo(), true);
+  robot(S.truth, false);
+  // 飛行中的球
+  for (const b of S.balls) {
+    const k = clamp((S.t - b.t0) / 0.5, 0, 1); if (k >= 1 && S.t - b.t0 > 1.2) continue;
+    const [bx, by] = P(b.x0 + (b.x1 - b.x0) * k, b.y0 + (b.y1 - b.y0) * k);
+    g.fillStyle = k < 1 ? css("--warn") : b.ok ? css("--ok") : css("--bad");
+    g.beginPath(); g.arc(bx, by, k < 1 ? 4 : 5, 0, 7); g.fill();
+  }
+  S.balls = S.balls.filter(b => S.t - b.t0 <= 1.2);
+}
+
+function drawBoard() {
+  const { g, w, h } = fitCanvas(bc, 0.78);
+  g.fillStyle = css("--panel2"); g.fillRect(0, 0, w, h);
+  const colX = c => w * (0.2 + 0.3 * c), rowY = r => h * (r === 0 ? 0.13 : 0.13 + 0.25 * r + 0.04);
+  const mPx = w * 0.3 / C.colM;   // 公尺 -> 像素（欄距 0.9 m）
+  g.font = "600 12px system-ui"; g.textAlign = "center"; g.textBaseline = "middle";
+  for (let i = 0; i < 12; i++) {
+    const r = rowOf(i), c = i % 3, x = colX(c), y = rowY(r), R = (i < 3 ? SIM.holeR[0] : SIM.holeR[1]) * mPx;
+    g.fillStyle = css("--bg"); g.beginPath(); g.arc(x, y, R, 0, 7); g.fill();
+    g.lineWidth = S.target === i ? 3 : 1.5; g.strokeStyle = S.target === i ? css("--tgt") : css("--line"); g.stroke();
+    if (i < 3 && i === S.lit && S.cam) { g.strokeStyle = css("--bad"); g.lineWidth = 3; g.beginPath(); g.arc(x, y, R + 6, 0, 7); g.stroke(); }
+    g.fillStyle = css("--mute"); g.font = "10px system-ui"; g.fillText(i, x - R - 9, y - R + 2);
+    if (S.tries[i]) { g.fillStyle = css("--txt"); g.font = "600 12px system-ui"; g.fillText(`${S.made[i]}/${S.tries[i]}`, x, y + R + 11); }
+  }
+  for (const m of S.marks) {
+    const x = colX(m.i % 3) - m.lat * mPx, y = rowY(rowOf(m.i)) - m.vert * mPx;
+    g.fillStyle = m.ok ? css("--ok") : css("--bad"); g.beginPath(); g.arc(x, y, 3, 0, 7); g.fill();
+  }
+  g.textBaseline = "alphabetic";
+}
+
+function score() {
+  const st = S.st, half = st.half;
+  let pts = 0;
+  for (let i = 3; i < 12; i++) pts += 2 * Math.min(S.made[i], half === 1 ? 3 : 2);
+  pts += 4 * Math.min(S.made[S.lit], half === 1 ? 3 : 2);
+  let lines = 0;
+  if (half === 2) {
+    const has = (r, c) => S.made[3 + 3 * r + c] > 0;
+    for (let r = 0; r < 3; r++) if ([0, 1, 2].every(c => has(r, c))) lines += 2;
+    for (let c = 0; c < 3; c++) if ([0, 1, 2].every(r => has(r, c))) lines += 4;
+    if ([0, 1, 2].every(k => has(k, k))) lines += 8;
+    if ([0, 1, 2].every(k => has(k, 2 - k))) lines += 8;
+  }
+  return { pts: pts + lines, lines };
+}
+
+function render() {
+  drawField(); drawBoard();
+  $("clock").textContent = S.t.toFixed(1);
+  $("clock").style.color = S.t > 60 ? css("--warn") : "";
+  $("fired").textContent = S.fired; $("hits").textContent = S.hitsTotal;
+  const sc = score(); $("score").textContent = sc.pts;
+  $("phase").textContent = S.phase;
+  $("boardNote").textContent = S.st.half === 2 ? `連線加分 ${sc.lines}` : "";
+  const o = odo();
+  $("poseTxt").textContent = `X ${S.truth.x.toFixed(2)}  Y ${S.truth.y.toFixed(2)}  相機朝向 ${deg(wrap(S.truth.th + Math.PI / 2)).toFixed(1)}°`;
+  const a = S.aim;
+  const rows = [
+    ["目標孔", S.target >= 0 ? `孔 ${S.target}` : "—"],
+    ["瞄準來源", S.aimSource],
+    ["即時影像", a ? S.liveStatus : "—"],
+    ["底盤", a ? S.chassis : S.driving ? "AutoDrive 移動中" : "—"],
+    ["車頭誤差", a ? `${S.headErr.toFixed(2)}°` : "—"],
+    ["影像修正次數", a ? a.corrections : "—"],
+    ["仰角", `${S.hood.pos.toFixed(1)}° → ${S.hood.target.toFixed(1)}°（真正需要 ${S.target >= 0 ? requiredHood(S.target).toFixed(1) : "—"}°）`],
+    ["發射輪", `${S.rps.toFixed(0)} / ${S.rpsTarget} RPS`],
+    ["里程計誤差", `${(Math.hypot(S.off.x, S.off.y) * 100).toFixed(1)} cm`],
+    ["仰角歸零誤差", `${S.hoodZeroErr >= 0 ? "+" : ""}${S.hoodZeroErr.toFixed(2)}°（模擬開機手擺誤差）`],
+    ["板子鎖定", S.lock ? "已鎖定" : "—"],
+  ];
+  $("kv").innerHTML = rows.map(([k, v]) => `<b>${k}</b><span>${v}</span>`).join("");
+}
+
+let last = 0, acc = 0;
+function loop(ts) {
+  if (!running) return;
+  const spd = +$("speed").value;
+  acc += Math.min(0.1, (ts - (last || ts)) / 1000) * spd; last = ts;
+  let n = 0;
+  while (acc >= SIM.dt && n < 2000) { step(); acc -= SIM.dt; n++; }
+  render();
+  if (S.done && S.balls.length === 0) { running = false; $("btnPause").disabled = true; $("btnPush").disabled = true; $("btnStart").disabled = true; return; }
+  raf = setTimeout(() => loop(performance.now()), 16);
+}
+
+$("btnStart").onclick = () => {
+  if (S.done) reset();
+  S.opt = opt(); running = true; last = 0; acc = 0;
+  $("btnStart").disabled = true; $("btnPause").disabled = false; $("btnPush").disabled = false;
+  raf = setTimeout(() => loop(performance.now()), 16);
+};
+$("btnPause").onclick = () => {
+  running = false; clearTimeout(raf);
+  $("btnStart").disabled = false; $("btnStart").textContent = "繼續"; $("btnPause").disabled = true;
+};
+$("btnReset").onclick = () => { clearTimeout(raf); reset(); };
+$("btnPush").onclick = () => {
+  const a = Math.random() * 2 * Math.PI, d = 0.15;
+  S.truth.x += d * Math.cos(a); S.truth.y += d * Math.sin(a);
+  S.off.x -= 0.7 * d * Math.cos(a); S.off.y -= 0.7 * d * Math.sin(a);   // 輪子只感覺到 30%
+  log("被推了 15 cm（里程計只看到 30%）", "w");
+};
+for (const id of ["side", "strat"]) $(id).onchange = () => { if (!running) reset(); };
+window.addEventListener("resize", () => S && render());
+matchMedia("(prefers-color-scheme: dark)").addEventListener("change", () => S && render());
+reset();
+</script>
+</body>
+</html>

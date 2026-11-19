@@ -1,0 +1,28 @@
+# Orin 開機自動啟動視覺節點（systemd「使用者服務」，裝在 ~/.config/systemd/user/，不需要 sudo）
+# 開機自動跑還需要「linger」：loginctl enable-linger william（讓使用者服務在沒登入時也會啟動）
+#
+# 常用指令（在 Orin 上）：
+#   systemctl --user status vision        看狀態
+#   tail -f ~/vision/vision.log           看即時 log
+#   systemctl --user restart vision       重新啟動（換模型、改程式後）
+#   systemctl --user stop vision          暫停（例如要手動跑 run_vision.sh 測試時）
+#   systemctl --user disable vision       取消開機自動啟動
+[Unit]
+Description=9427 Orin vision node (YOLO TensorRT -> NetworkTables)
+After=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=%h/vision
+# 比賽設定：不加 --ignore-enable，聽 roboRIO 的 Vision/enable（自主移動中暫停辨識）
+ExecStart=%h/vision/run_vision.sh
+# 相機拔掉、程式出錯都會自動重啟；開機時相機或網路還沒好也會一直重試
+Restart=always
+RestartSec=2
+# 讓 print 立刻寫進 log；這台 Orin 的使用者 journal 不保存，所以直接寫到 ~/vision/vision.log
+Environment=PYTHONUNBUFFERED=1
+StandardOutput=append:%h/vision/vision.log
+StandardError=append:%h/vision/vision.log
+
+[Install]
+WantedBy=default.target
