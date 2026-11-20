@@ -99,6 +99,19 @@ class SyntheticBoardTest(unittest.TestCase):
         self.assertEqual(shift, 1)
         self.assertEqual(indices_of(holes), truth)
 
+    def test_anchor_ignores_nan(self):
+        """row_anchor.json 裡存了 NaN（Orin 上真的發生過）：要當作沒有基準，之後也不能再被 NaN 污染。"""
+        import tempfile
+        with tempfile.TemporaryDirectory() as d:
+            p = os.path.join(d, "row_anchor.json")
+            with open(p, "w") as f:
+                f.write('{"cam_y": NaN}')
+            a = vn.RowAnchor(p)
+            self.assertIsNone(a.ref)
+            a.learn(-0.6)
+            a.learn(float("nan"))
+            self.assertAlmostEqual(a.ref, -0.6)
+
     def test_too_few_holes(self):
         holes, _ = synth_holes(*camera_pose(), indices=[3, 4, 5])
         self.assertFalse(vn.assign_grid(holes))

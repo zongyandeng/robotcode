@@ -356,6 +356,8 @@ class RowAnchor:
                 self.ref = float(json.load(f)["cam_y"])
         except (OSError, ValueError, KeyError, TypeError):
             pass
+        if self.ref is not None and not math.isfinite(self.ref):
+            self.ref = None     # 存檔裡是 NaN（舊版會存進去）：當作沒有基準，重新學
 
     def learn_rows(self, holes, K, hood_deg):
         rows = {}
@@ -366,6 +368,8 @@ class RowAnchor:
             self.row_ang[r] = float(np.mean(v)) + hood_deg
 
     def learn(self, cam_y):
+        if not math.isfinite(cam_y):
+            return              # 一個 NaN 進到指數平均就永遠是 NaN，基準會失效
         self.ref = cam_y if self.ref is None else 0.9 * self.ref + 0.1 * cam_y
         now = time.time()
         if self.path is not None and now - self._saved > 5.0:
