@@ -900,7 +900,10 @@ def uvc_frames(index, w, h, hfov_deg, rotate180=False, exposure=None, mirror=Fal
     cap.set(cv2.CAP_PROP_FRAME_WIDTH, w)
     cap.set(cv2.CAP_PROP_FRAME_HEIGHT, h)
     cap.set(cv2.CAP_PROP_FPS, 30)
-    cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)   # 只留最新一幀，降低延遲
+    # 緩衝區至少要 2 個：只有 1 個時，程式把緩衝區還回驅動之前相機拍好的下一幀沒地方放，會被丟掉，
+    # 幀率剛好砍半（2026-11-20 在 Orin 實測：1 個 = 15 fps，2 個以上 = 30 fps）。
+    # 取像執行緒（FrameGrabber）一直把幀讀走，排隊中不會累積舊畫面，所以 2 個不會增加延遲。
+    cap.set(cv2.CAP_PROP_BUFFERSIZE, 2)
     if exposure is not None:
         exposure.attach(cap, index)
     grab = FrameGrabber(cap, hood_fn)
