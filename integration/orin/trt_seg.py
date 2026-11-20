@@ -161,30 +161,44 @@ class SegModel:
 
         p = protos[0]                           # (32, mh, mw)
         c, mh, mw = p.shape
-        m = det[:, 4 + nc:] @ p.reshape(c, -1)  # (n, mh*mw)
-        m = 1.0 / (1.0 + np.exp(-m))
-        m = m.reshape(-1, mh, mw)
+        coef = det[:, 4 + nc:]
         s = self.imgsz
         sx, sy = mw / s, mh / s
+        # protos 到 letterbox 通常剛好放大整數倍（160 -> 640 = 4 倍）：這時只在「框附近的小區塊」算 sigmoid、放大、找輪廓，
+        # 結果與整張 640x640 放大相同（雙線性放大的取樣位置一致），但每個孔只處理自己那一小塊，CPU 省很多
+        up_k = s // mw if (s % mw == 0 and s % mh == 0 and s // mw == s // mh) else 0
         H, W = frame.shape[:2]
         polys = []
         for k in range(len(idx)):
             bx, by, bw_, bh_ = boxes_xywh[k]
             # 在 protos 尺度裁到框內，與 Ultralytics crop_mask 相同：保留 x1 <= 像素索引 < x2
-            crop = np.zeros_like(m[k])
             xa, ya = max(int(np.ceil(bx * sx)), 0), max(int(np.ceil(by * sy)), 0)
             xb, yb = min(int(np.ceil((bx + bw_) * sx)), mw), min(int(np.ceil((by + bh_) * sy)), mh)
             if xb <= xa or yb <= ya:
                 continue
-            crop[ya:yb, xa:xb] = m[k][ya:yb, xa:xb]
-            # 放大到 letterbox 尺度、門檻化後找輪廓，再把座標換回原圖（與 Ultralytics masks.xy 相同）
-            up = cv2.resize(crop, (s, s), interpolation=cv2.INTER_LINEAR)
+            if up_k:
+                # 區塊外圍多留 1 格 0（框外的值本來就是 0），碰到 protos 邊界時不留（cv2.resize 在邊界是複製最外圈，和整張放大一致）
+                x0, y0 = max(xa - 1, 0), max(ya - 1, 0)
+                x1, y1 = min(xb + 1, mw), min(yb + 1, mh)
+                crop = np.zeros((y1 - y0, x1 - x0), np.float32)
+                logit = coef[k] @ p[:, ya:yb, xa:xb].reshape(c, -1)
+                crop[ya - y0:yb - y0, xa - x0:xb - x0] = (1.0 / (1.0 + np.exp(-logit))).reshape(yb - ya, xb - xa)
+                up = cv2.resize(crop, ((x1 - x0) * up_k, (y1 - y0) * up_k), interpolation=cv2.INTER_LINEAR)
+                off = np.array([x0 * up_k, y0 * up_k], np.float32)
+            else:
+                # 非整數倍（少見）：照原本做法整張放大
+                crop = np.zeros((mh, mw), np.float32)
+                logit = coef[k] @ p[:, ya:yb, xa:xb].reshape(c, -1)
+                crop[ya:yb, xa:xb] = (1.0 / (1.0 + np.exp(-logit))).reshape(yb - ya, xb - xa)
+                up = cv2.resize(crop, (s, s), interpolation=cv2.INTER_LINEAR)
+                off = np.zeros(2, np.float32)
+            # 門檻化後找輪廓，再把座標換回原圖（與 Ultralytics masks.xy 相同）
             mask = (up > self.mask_thr).astype(np.uint8)
             cnts, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
             if not cnts:
                 continue
-            c = max(cnts, key=cv2.contourArea).reshape(-1, 2).astype(np.float32)
-            poly = (c - np.array([left, top], np.float32)) / r
+            c_ = max(cnts, key=cv2.contourArea).reshape(-1, 2).astype(np.float32) + off
+            poly = (c_ - np.array([left, top], np.float32)) / r
             poly[:, 0] = poly[:, 0].clip(0, W - 1)
             poly[:, 1] = poly[:, 1].clip(0, H - 1)
             if len(poly) >= 3:

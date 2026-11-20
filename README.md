@@ -21,10 +21,11 @@ USB 相機 ─► Orin Nano  integration/orin/vision_node.py
 
 | 路徑 | 內容 |
 |---|---|
-| [`integration/orin/`](integration/orin) | Orin 視覺節點：`vision_node.py`（主程式）、`trt_seg.py`（不需 PyTorch 的 TensorRT／ONNX 推論）、`nt4_lite.py`（純 Python NT4 客戶端）、`run_vision.sh`、`vision.service`（開機自動啟動） |
+| [`integration/orin/`](integration/orin) | Orin 視覺節點：`vision_node.py`（主程式）、`trt_seg.py`（不需 PyTorch 的 TensorRT／ONNX 推論）、`nt4_lite.py`（純 Python NT4 客戶端）、`calibration.json`（相機焦距與距離修正）、`run_vision.sh`、`vision.service`（開機自動啟動） |
+| [`tests/`](tests) | 視覺回歸測試（合成板子 + 實拍照片的預期結果） |
 | [`dashboard/`](dashboard) | 比賽儀表板 `dashboard.html`（單一檔案、不需網路）、自主流程模擬器 `auto_sim.html`、沒有機器人時測試用的 `mock_robot.py`、一鍵開啟 DS＋儀表板的 `start_dashboard.ps1` |
 | [`scripts/`](scripts) | 模型訓練流程：建資料集、訓練、驗證、混淆矩陣、找誤報、產生報告 |
-| [`tools/`](tools) | NetworkTables 記錄器（`shoot_logger.py`、`auto_logger.py`）、SAM 標註審查工具、Orbbec 深度相機測試 |
+| [`tools/`](tools) | NetworkTables 記錄器（`shoot_logger.py`、`auto_logger.py`，輸出到 `logs/`）、SAM 標註審查工具、Orbbec 深度相機測試 |
 | [`review/`](review) | 標註審查結果（`masks_r2.json` 是建資料集的來源） |
 | [`report/`](report) | 模型訓練報告（HTML） |
 | [`flowchart/`](flowchart) | 系統流程圖與產生腳本 |
@@ -39,7 +40,7 @@ USB 相機 ─► Orin Nano  integration/orin/vision_node.py
 
 ### 比賽時（筆電）
 
-雙擊 `dashboard/開啟儀表板.bat`：自動開 Driver Station 並把儀表板擺在上方。roboRIO 預設 `10.94.27.2`，相機串流 `http://10.94.27.12:1181/stream.mjpg`。
+雙擊 `start_robot.bat`（或 `dashboard/開啟儀表板.bat`，兩個一樣）：自動開 Driver Station 並把儀表板擺在上方。roboRIO 預設 `10.94.27.2`，相機串流 `http://10.94.27.12:1181/stream.mjpg`。
 
 ### Orin 視覺節點
 
@@ -78,8 +79,22 @@ cd dashboard
 
 ```powershell
 cd tools
-..\.venv_vision\Scripts\python.exe shoot_logger.py    # Ctrl+C 結束，輸出 shoot_log_<時間>.csv
+..\.venv_vision\Scripts\python.exe shoot_logger.py    # Ctrl+C 結束，輸出 logs\shoot_log_<時間>.csv
 ```
+
+預設連隊號 9427 的 roboRIO（`10.94.27.2`）；可以直接給位址（`shoot_logger.py 127.0.0.1`）或 `--team`。隊號寫在 `tools/nt_common.py`。
+
+### 回歸測試
+
+改了 `vision_node.py` 或 `trt_seg.py` 之後跑一次（不需要安裝 pytest）：
+
+```powershell
+.venv_vision\Scripts\python.exe -m unittest discover -s tests -v
+```
+
+- 合成板子測試：任何電腦都能跑，檢查排格子、solvePnP、看不到小孔時的排號推斷。
+- 實拍照片測試：`data_robotcam/` 和 `runs/yolo11n_seg_v1/export/best.onnx` 都在時才跑，輸出要和 `tests/expected/robotcam_onnx.jsonl` 一致。
+  確定新結果比較好（例如改了排格子邏輯、換了模型）時，用 `tests/make_expected.py` 重新產生，再用 `git diff` 看哪些照片的結果變了。
 
 ## 訓練模型
 
@@ -98,12 +113,17 @@ yolo export model=best.pt format=onnx imgsz=640 opset=17 simplify=True
 
 ## 環境
 
-| 環境 | 用途 | 主要套件 |
+| 環境 | 用途 | 依賴清單 |
 |---|---|---|
-| Orin Nano（JetPack 6.0、Python 3.10） | 視覺節點 | TensorRT 8.6、OpenCV、numpy、websocket-client、msgpack（不需 PyTorch／pyntcore） |
-| 筆電 `.venv_vision` | 訓練、離線測試、記錄器 | ultralytics、opencv-python、pyntcore |
-| 筆電 `.venv_nt` | `mock_robot.py` | pyntcore、pillow |
+| Orin Nano（JetPack 6.0、Python 3.10） | 視覺節點 | [`integration/orin/requirements-orin.txt`](integration/orin/requirements-orin.txt)（TensorRT 另外裝，不需 PyTorch／pyntcore） |
+| 筆電 `.venv_vision` | 訓練、離線測試、回歸測試、記錄器 | [`requirements-vision.txt`](requirements-vision.txt) |
+| 筆電 `.venv_nt` | `mock_robot.py` | [`requirements-nt.txt`](requirements-nt.txt) |
+
+```powershell
+python -m venv .venv_vision
+.venv_vision\Scripts\python.exe -m pip install -r requirements-vision.txt
+```
 
 ## 不在 repo 裡的檔案
 
-以下檔案只在本機，請另外備份：`data/`、`data_robotcam/`（原始照片）、`dataset/`、`runs/`（訓練輸出與權重）、`*.pt` / `*.onnx` / `*.engine`（模型）、`document/` 內的 PDF／Word／影片、`組合圖.stp`（CAD）、`tools/*.csv`（記錄檔）。
+以下檔案只在本機，請另外備份：`data/`、`data_robotcam/`（原始照片）、`dataset/`、`runs/`（訓練輸出與權重）、`*.pt` / `*.onnx` / `*.engine`（模型）、`document/` 內的 PDF／Word／影片、`組合圖.stp`（CAD）、`logs/`（記錄檔）。

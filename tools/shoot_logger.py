@@ -7,14 +7,15 @@
       目前目標孔、已發射球數、Feeder／Orbit 狀態、電池電壓。
 """
 import csv
-import os
 import sys
 import time
 
 import ntcore
 
-SERVER = sys.argv[1] if len(sys.argv) > 1 else "10.94.27.2"
-OUT = os.path.join(os.path.dirname(os.path.abspath(__file__)), time.strftime("shoot_log_%Y%m%d_%H%M%S.csv"))
+from nt_common import log_path, server_from_args
+
+SERVER = server_from_args("自主射擊除錯記錄器")
+OUT = log_path("shoot_log")
 
 KEYS = [
     "Robot/Enabled", "Auto/Phase",

@@ -311,7 +311,9 @@ footer{flex:none;padding:8px 16px;color:var(--mute);font-size:12.5px;border-top:
 const $ = id => document.getElementById(id);
 const LS = {
   get(k, d){ try{ return localStorage.getItem(k) ?? d }catch(e){ return d } },
-  set(k, v){ try{ localStorage.setItem(k, v) }catch(e){} }
+  set(k, v){ try{ localStorage.setItem(k, v) }catch(e){} },
+  /** 讀 JSON；讀不到、格式壞掉或 ok(v) 不成立時回傳 fallback */
+  getJson(k, ok, fallback){ try{ const v = JSON.parse(LS.get(k, "null")); return v !== null && ok(v) ? v : fallback }catch(e){ return fallback } }
 };
 
 /* ---------------------------------------------------------------- msgpack（只實作 NT4 會用到的型別） */
@@ -626,9 +628,9 @@ drawFieldStatic();
    仰角 -> /SmartDashboard/Tune/Hood Target Deg（機器人啟用時直接走到這個角度）
    每一發的紀錄存在這個瀏覽器（localStorage "shotlog"），可匯出 ShotTable 程式碼與 CSV。 */
 const TUNE = { rpsKey: "/SmartDashboard/Tune/Shooter RPS", hoodKey: "/SmartDashboard/Tune/Hood Target Deg", hole: 4, seq: 0,
-  log: (() => { try{ return JSON.parse(localStorage.getItem("shotlog") || "[]") }catch(e){ return [] } })() };
+  log: LS.getJson("shotlog", v => Array.isArray(v), []) };
 const ROW_NAME = ["小孔排", "大孔第 1 排", "大孔第 2 排", "大孔第 3 排"];
-function saveLog(){ try{ localStorage.setItem("shotlog", JSON.stringify(TUNE.log)) }catch(e){} }
+function saveLog(){ LS.set("shotlog", JSON.stringify(TUNE.log)) }
 function tuneWarn(msg){ $("tuneInfo").textContent = msg; $("tuneInfo").style.color = "var(--bad)" }
 function sendRps(v){
   v = Math.min(110, Math.max(0, Math.round(Number(v) * 10) / 10));
@@ -723,33 +725,15 @@ function renderTune(){
     $("tuneSpinNow").style.color = b > 98 ? "var(--bad)" : "";
   } else $("tuneSpinNow").textContent = "差速 —";
   const hd = NT.sd("Hood/Position (Degrees)"), ht = NT.sd("Hood/Target (Rotations)");
-  document.querySelectorAll("[data-gain]").forEach(inp => {
-    const v = NT.sd("Tune/Hood " + inp.dataset.gain);
-    if(document.activeElement !== inp && typeof v === "number") inp.value = +v.toFixed(3);
-  });
-  document.querySelectorAll("[data-feeder]").forEach(inp => {
-    const v = NT.sd("Tune/Feeder " + inp.dataset.feeder);
-    if(document.activeElement !== inp && typeof v === "number") inp.value = +v.toFixed(3);
-  });
-  document.querySelectorAll("[data-orbit]").forEach(inp => {
-    const v = NT.sd("Tune/Orbit " + inp.dataset.orbit);
-    if(document.activeElement !== inp && typeof v === "number") inp.value = +v.toFixed(2);
-  });
-  document.querySelectorAll("[data-tnum]").forEach(inp => {
-    const v = NT.sd(inp.dataset.tnum);
-    if(document.activeElement !== inp && typeof v === "number") inp.value = +v.toFixed(2);
-  });
-  document.querySelectorAll("[data-tkey]").forEach(inp => {
-    const v = NT.sd(inp.dataset.tkey);
-    if(document.activeElement !== inp && typeof v === "number") inp.value = v;
-  });
+  for(const [group, P] of Object.entries(PARAMS)){                 // 各組參數輸入框顯示機器人目前的值
+    document.querySelectorAll(`[data-${group}]`).forEach(inp => {
+      const v = NT.sd(P.sd(inp.dataset[group]));
+      if(document.activeElement !== inp && typeof v === "number") inp.value = P.dp === null ? v : +v.toFixed(P.dp);
+    });
+  }
   $("orbitNow").textContent = `最近一發：${NT.sd("Orbit/Ball Detect") ?? "—"}｜ID57 目前電流 ${num(NT.sd("Orbit2/Current (A)"), 1)} A`;
   { const st = NT.sd("Shake/Status"); if(typeof st === "string") $("shakeBtnInfo").textContent = "最近一次：" + st; }
   $("feederNow").textContent = `狀態 ${NT.sd("Feeder/State") ?? "—"}｜卡球 ${num(NT.sd("Feeder/Jam Count"), 0)} 次｜最近原因 ${NT.sd("Feeder/Jam Reason") ?? "—"}｜電流 ${num(NT.sd("Feeder/Current (A)"), 1)} A｜離格線 ${num(NT.sd("Feeder/Grid Error (Degrees)"), 1)}°`;
-  document.querySelectorAll("[data-shake]").forEach(inp => {
-    const v = NT.sd("Tune/Shake " + inp.dataset.shake);
-    if(document.activeElement !== inp && typeof v === "number") inp.value = +v.toFixed(2);
-  });
   { const en = NT.sd("Tune/Shake Enabled"), deg = NT.sd("Tune/Shake Deg"), a = NT.sd("Tune/Shake Alpha"), w = NT.sd("Tune/Shake Max Omega");
     if(typeof en === "number" && en < 0.5) $("shakeNow").textContent = "目前不晃";
     else if(typeof deg === "number" && typeof a === "number" && typeof w === "number"){
@@ -763,6 +747,33 @@ function renderTune(){
     $("hoodErrNow").style.color = typeof e === "number" && Math.abs(e) <= 0.3 ? "var(--ok)" : ""; }
   $("tuneHoodNow").textContent = `目前 ${num(hd, 1)}°｜目標 ${typeof ht === "number" ? (ht * 360).toFixed(1) : "—"}°`;
   if($("tuneInfo").style.color !== "var(--bad)") $("tuneInfo").textContent = `目標孔 ${TUNE.hole}`;
+}
+/* 填表頁的各組參數輸入框（HTML 屬性 data-<組名>="參數名"）。
+   sd：參數名 -> /SmartDashboard/ 底下的 key；dp：顯示的小數位數（null = 原樣）；range：上下限（與機器人端相同，機器人端也會再限制一次）；
+   ints：要取整數的參數；check：額外檢查（回傳 true 或錯誤訊息）；toggle：0／1 開關。 */
+const PARAMS = {
+  gain:   { sd: n => "Tune/Hood " + n, dp: 3, check: v => v >= 0 || "PID 數值要 ≥ 0" },
+  feeder: { sd: n => "Tune/Feeder " + n, dp: 3, label: "Feeder 參數", ints: ["Retries"],
+            range: { "kP": [0, 200], "Cruise": [0.2, 10], "Accel": [0.5, 40], "Jam Amps": [5, 40], "Stall Sec": [0.05, 1],
+                     "Grace Sec": [0, 1], "Retries": [0, 3], "Fwd Volts": [0, 12], "Fwd Sec": [0, 2], "Rev Deg": [0, 180] } },
+  orbit:  { sd: n => "Tune/Orbit " + n, dp: 2, label: "Orbit 參數", ints: ["Detect Enabled"],     // 送球偵測（Orbit ID57 電流）
+            range: { "Detect Enabled": [0, 1], "Rise Amps": [0.5, 30] } },
+  shake:  { sd: n => "Tune/Shake " + n, dp: 2, label: "晃動參數", ints: ["Enabled"],
+            range: { "Enabled": [0, 1], "Deg": [0, 30], "Alpha": [0.5, 30], "Max Omega": [0.2, 5], "Kp": [0, 20] } },
+  tnum:   { sd: n => n, dp: 2, range: { "*": [-10, 10] } },                                          // 數值（例如整體仰角偏移）
+  tkey:   { sd: n => n, dp: null, toggle: true },                                                    // 開關（0 / 1）
+};
+function sendParam(group, inp){
+  const P = PARAMS[group], name = inp.dataset[group];
+  let v = Number(inp.value);
+  if(P.toggle) v = v >= 0.5 ? 1 : 0;
+  else{
+    if(!isFinite(v)){ tuneWarn((P.label ?? "") + "要是數字"); return }
+    if(P.check){ const ok = P.check(v); if(ok !== true){ tuneWarn(ok); return } }
+    if(P.range){ const [lo, hi] = P.range[name] ?? P.range["*"]; v = Math.min(hi, Math.max(lo, P.ints?.includes(name) ? Math.round(v) : v)) }
+  }
+  if(!NT.connected){ tuneWarn("沒連上機器人"); return }
+  NT.setNumber("/SmartDashboard/" + P.sd(name), v); inp.value = v; inp.blur();
 }
 (function initTune(){
   for(let i = 0; i < 12; i++){
@@ -785,44 +796,9 @@ function renderTune(){
     sendHood(cur + Number(b.dataset.hood));
   }));
   $("tuneHood").addEventListener("keydown", e => { if(e.key === "Enter") sendHood($("tuneHood").value) });
-  // Feeder 參數：範圍與機器人端相同
-  const FEEDER_RANGE = { "kP": [0, 200], "Cruise": [0.2, 10], "Accel": [0.5, 40], "Jam Amps": [5, 40], "Stall Sec": [0.05, 1],
-                         "Grace Sec": [0, 1], "Retries": [0, 3], "Fwd Volts": [0, 12], "Fwd Sec": [0, 2], "Rev Deg": [0, 180] };
-  document.querySelectorAll("[data-feeder]").forEach(inp => inp.addEventListener("keydown", e => {
-    if(e.key !== "Enter") return;
-    const [lo, hi] = FEEDER_RANGE[inp.dataset.feeder];
-    let v = Number(inp.value);
-    if(!isFinite(v)){ tuneWarn("Feeder 參數要是數字"); return }
-    v = Math.min(hi, Math.max(lo, inp.dataset.feeder === "Retries" ? Math.round(v) : v));
-    if(!NT.connected){ tuneWarn("沒連上機器人"); return }
-    NT.setNumber("/SmartDashboard/Tune/Feeder " + inp.dataset.feeder, v); inp.value = v; inp.blur();
-  }));
-  // 送球偵測參數（Orbit ID57 電流）
-  const ORBIT_RANGE = { "Detect Enabled": [0, 1], "Rise Amps": [0.5, 30] };
-  document.querySelectorAll("[data-orbit]").forEach(inp => inp.addEventListener("keydown", e => {
-    if(e.key !== "Enter") return;
-    const [lo, hi] = ORBIT_RANGE[inp.dataset.orbit];
-    let v = Number(inp.value);
-    if(!isFinite(v)){ tuneWarn("Orbit 參數要是數字"); return }
-    v = Math.min(hi, Math.max(lo, inp.dataset.orbit === "Detect Enabled" ? Math.round(v) : v));
-    if(!NT.connected){ tuneWarn("沒連上機器人"); return }
-    NT.setNumber("/SmartDashboard/Tune/Orbit " + inp.dataset.orbit, v); inp.value = v; inp.blur();
-  }));
-  // 數值（例如整體仰角偏移）：改了按 Enter
-  document.querySelectorAll("[data-tnum]").forEach(inp => inp.addEventListener("keydown", e => {
-    if(e.key !== "Enter") return;
-    const v = Math.max(-10, Math.min(10, Number(inp.value)));
-    if(!isFinite(v)){ tuneWarn("要是數字"); return }
-    if(!NT.connected){ tuneWarn("沒連上機器人"); return }
-    NT.setNumber("/SmartDashboard/" + inp.dataset.tnum, v); inp.value = v; inp.blur();
-  }));
-  // 開關（0 / 1）
-  document.querySelectorAll("[data-tkey]").forEach(inp => inp.addEventListener("keydown", e => {
-    if(e.key !== "Enter") return;
-    const v = Number(inp.value) >= 0.5 ? 1 : 0;
-    if(!NT.connected){ tuneWarn("沒連上機器人"); return }
-    NT.setNumber("/SmartDashboard/" + inp.dataset.tkey, v); inp.value = v; inp.blur();
-  }));
+  // 各組參數（PID、Feeder、Orbit、晃底盤、數值、開關）：改了按 Enter 送出，設定集中在 PARAMS
+  for(const group of Object.keys(PARAMS))
+    document.querySelectorAll(`[data-${group}]`).forEach(inp => inp.addEventListener("keydown", e => { if(e.key === "Enter") sendParam(group, inp) }));
   // 立即晃一次：Shake/Request 每按 +1（機器人只在啟用中、值有改變時動作）
   $("shakeNowBtn").addEventListener("click", () => {
     if(!NT.connected){ tuneWarn("沒連上機器人"); return }
@@ -830,24 +806,6 @@ function renderTune(){
     const cur = Number(NT.values["/SmartDashboard/Shake/Request"] ?? 0);
     NT.setNumber("/SmartDashboard/Shake/Request", cur + 1);
   });
-  // 晃底盤參數：範圍與機器人端相同（機器人端也會再限制一次）
-  const SHAKE_RANGE = { "Enabled": [0, 1], "Deg": [0, 30], "Alpha": [0.5, 30], "Max Omega": [0.2, 5], "Kp": [0, 20] };
-  document.querySelectorAll("[data-shake]").forEach(inp => inp.addEventListener("keydown", e => {
-    if(e.key !== "Enter") return;
-    const [lo, hi] = SHAKE_RANGE[inp.dataset.shake];
-    let v = Number(inp.value);
-    if(!isFinite(v)){ tuneWarn("晃動參數要是數字"); return }
-    v = Math.min(hi, Math.max(lo, inp.dataset.shake === "Enabled" ? Math.round(v) : v));
-    if(!NT.connected){ tuneWarn("沒連上機器人"); return }
-    NT.setNumber("/SmartDashboard/Tune/Shake " + inp.dataset.shake, v); inp.value = v; inp.blur();
-  }));
-  document.querySelectorAll("[data-gain]").forEach(inp => inp.addEventListener("keydown", e => {
-    if(e.key !== "Enter") return;
-    const v = Number(inp.value);
-    if(!isFinite(v) || v < 0){ tuneWarn("PID 數值要 ≥ 0"); return }
-    if(!NT.connected){ tuneWarn("沒連上機器人"); return }
-    NT.setNumber("/SmartDashboard/Tune/Hood " + inp.dataset.gain, v); inp.blur();
-  }));
   $("logHit").onclick = () => { $("tuneInfo").style.color = ""; logShot(true) };
   $("logMiss").onclick = () => { $("tuneInfo").style.color = ""; logShot(false) };
   $("logUndo").onclick = () => { TUNE.log.pop(); saveLog(); renderLog() };
@@ -923,7 +881,7 @@ $("host").addEventListener("change", reconnect);
 setInterval(() => { if(!NT.connected && (!NT.ws || NT.ws.readyState > 1)) reconnect() }, 2000);
 reconnect();
 function showPage(t){ $("pageMain").hidden = t; $("pageTune").hidden = !t; $("tabMain").classList.toggle("on", !t); $("tabTune").classList.toggle("on", t); LS.set("page", t ? "tune" : "main") }
-$("tabMain").onclick = () => showPage(false); $("tabTune").onclick = () => showPage(true);
+$("tabMain").onclick = () => { showPage(false); render() }; $("tabTune").onclick = () => { showPage(true); render() };
 showPage(LS.get("page") === "tune");
 $("bTheme").onclick = () => { const r = document.documentElement; const n = r.dataset.theme === "light" ? "dark" : "light"; r.dataset.theme = n; LS.set("theme", n) };
 document.documentElement.dataset.theme = LS.get("theme", "dark");
@@ -931,8 +889,10 @@ document.documentElement.dataset.theme = LS.get("theme", "dark");
 /* ---------------------------------------------------------------- 畫面更新（10 Hz） */
 const FIRE = { t: -1e9, fp: undefined };
 function render(){
-  try{ drawFieldLive() }catch(e){ console.error(e) }
-  try{ renderTune() }catch(e){ console.error(e) }
+  // 只重畫看得到的那一頁（另一頁切回來時下一次 render 就會更新）
+  const onMain = !$("pageMain").hidden;
+  if(onMain){ try{ drawFieldLive() }catch(e){ console.error(e) } }
+  else{ try{ renderTune() }catch(e){ console.error(e) } }
   const alerts = [];
   const ntOk = NT.connected;
   $("dConn").className = "dot " + (ntOk ? "ok" : "bad");
@@ -1053,16 +1013,19 @@ function render(){
 /* ---------------------------------------------------------------- 各孔定位數據表（手動填，存 localStorage "holetable"） */
 const HOLE_ROW = ["小孔排", "大孔第 1 排", "大孔第 2 排", "大孔第 3 排"], HOLE_COL = ["左", "中", "右"];
 const HOLE_F = ["bearing", "hood", "rps", "dist", "note"];
-let HOLES = (() => { try{ const a = JSON.parse(localStorage.getItem("holetable") || "[]"); if(Array.isArray(a) && a.length === 12) return a }catch(e){} return Array.from({length: 12}, () => ({})) })();
-function saveHoles(){ try{ localStorage.setItem("holetable", JSON.stringify(HOLES)) }catch(e){} pushHoles() }
+let HOLES = LS.getJson("holetable", a => Array.isArray(a) && a.length === 12, null) ?? Array.from({length: 12}, () => ({}));
+function saveHoles(){ LS.set("holetable", JSON.stringify(HOLES)); pushHoles() }
 // 把數據表送到機器人：Tune/Hole <i> Bearing / Hood / RPS（空白 = NaN，機器人改用程式內建值）。
-// 只送有變的值；重新連線後全部重送一次（機器人重開機後也會拿到）
+// 只送有變的值；重新連線後全部重送一次（機器人重開機後也會拿到）。
+// 正在輸入的那一格先不送（打「45」時不會先送出「4」），離開該格（change）時才送。
 let HOLE_SENT = {}, holeWasConn = false;
 function pushHoles(){
   if(!NT.connected){ holeWasConn = false; return }
   if(!holeWasConn){ HOLE_SENT = {}; holeWasConn = true }
+  const ae = document.activeElement, editing = ae && ae.dataset && ae.dataset.hi !== undefined ? `${ae.dataset.hi}:${ae.dataset.hf}` : "";
   HOLES.forEach((h, i) => {
     for(const [f, k] of [["bearing", "Bearing"], ["hood", "Hood"], ["rps", "RPS"]]){
+      if(editing === `${i}:${f}`) continue;
       const v = typeof h[f] === "number" && isFinite(h[f]) ? h[f] : NaN, key = `/SmartDashboard/Tune/Hole ${i} ${k}`;
       if(String(HOLE_SENT[key]) !== String(v)){ NT.setNumber(key, v); HOLE_SENT[key] = v }
     }
@@ -1090,6 +1053,7 @@ $("holeTbl").addEventListener("input", e => {
   const v = t.dataset.hf === "note" ? t.value : (t.value === "" ? undefined : +t.value);
   HOLES[+t.dataset.hi][t.dataset.hf] = v; saveHoles();
 });
+$("holeTbl").addEventListener("change", e => { if(e.target.dataset.hi !== undefined){ e.target.blur(); pushHoles() } });
 $("holeTbl").addEventListener("click", e => {
   const b = e.target.closest("[data-hget]"); if(!b) return;
   const i = +b.dataset.hget, g = holeRead(i);

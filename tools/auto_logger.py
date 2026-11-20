@@ -8,15 +8,15 @@
 """
 import csv
 import math
-import os
 import struct
-import sys
 import time
 
 import ntcore
 
-SERVER = sys.argv[1] if len(sys.argv) > 1 else "10.94.27.2"
-OUT = os.path.join(os.path.dirname(os.path.abspath(__file__)), time.strftime("auto_log_%Y%m%d_%H%M%S.csv"))
+from nt_common import log_path, server_from_args
+
+SERVER = server_from_args("自主流程除錯記錄器")
+OUT = log_path("auto_log")
 
 inst = ntcore.NetworkTableInstance.create()
 inst.startClient4("auto-logger")

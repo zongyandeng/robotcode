@@ -1,0 +1,5 @@
+# 筆電 .venv_nt：dashboard/mock_robot.py（沒有機器人時測試儀表板）
+#   python -m venv .venv_nt
+#   .venv_nt\Scripts\python.exe -m pip install -r requirements-nt.txt
+pyntcore==2026.2.2
+pillow==12.3.0

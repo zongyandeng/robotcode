@@ -28,6 +28,7 @@ document/**
 !document/**/*.md
 
 # 記錄檔與執行時產生的檔案
+/logs/
 tools/*.csv
 tools/orbbec_test/Log/
 *.log
@@ -36,3 +37,6 @@ integration/orin/row_anchor.json
 # CAD 與備份檔
 *.stp
 *.bak
+
+# ntcore 伺服器自動產生的持久化檔（測試時產生）
+/networktables.json

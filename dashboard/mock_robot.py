@@ -82,11 +82,10 @@ strat_chooser.getStringTopic("default").publish().set(strat_opts[0])
 strat_sel = strat_chooser.getStringTopic("selected").subscribe("")
 strat_active = strat_chooser.getStringTopic("active").publish()
 # 模擬填表工具：Tune/Shooter RPS 開機設一次預設值（之後由儀表板改），Tune/Hood Target Deg 讓仰角走過去
-_tune_rps_pub = sd_tbl = inst.getTable("SmartDashboard")
-_rps_pub = sd_tbl.getDoubleTopic("Tune/Shooter RPS").publish(); _rps_pub.set(75.0)
-_hood_pub = sd_tbl.getDoubleTopic("Tune/Hood Target Deg").publish(); _hood_pub.set(-1.0)
-tune_rps = sd_tbl.getDoubleTopic("Tune/Shooter RPS").subscribe(75.0)
-tune_hood = sd_tbl.getDoubleTopic("Tune/Hood Target Deg").subscribe(-1.0)
+_rps_pub = sd.getDoubleTopic("Tune/Shooter RPS").publish(); _rps_pub.set(75.0)
+_hood_pub = sd.getDoubleTopic("Tune/Hood Target Deg").publish(); _hood_pub.set(-1.0)
+tune_rps = sd.getDoubleTopic("Tune/Shooter RPS").subscribe(75.0)
+tune_hood = sd.getDoubleTopic("Tune/Hood Target Deg").subscribe(-1.0)
 hood_deg_state = [20.0]
 pubs = {}
 
@@ -110,14 +109,13 @@ while True:
     shooting = cycle > 6
     top_t, bot_t = (60 * 0.85, 60 * 1.15) if shooting else (0.0, 0.0)
     ramp = min(1.0, max(0.0, (cycle - 6) / 2.0)) if shooting else 0.0
-    top_a, bot_a = top_t * ramp, bot_t * ramp
     ho = 0.1 * min(1.0, ramp)
     balls = int(max(0, min(27, (cycle - 9) / 0.9))) if shooting else 0
     ready_sh = shooting and ramp >= 1.0
 
     side_active.set(side_sel.get() or "左起始框")
     strat_active.set(strat_sel.get() or strat_opts[0])
-    sgn = -1.0 if side_active and side_sel.get() == "右起始框" else 1.0
+    sgn = -1.0 if side_sel.get() == "右起始框" else 1.0
     # 場地圖：0~6 秒從起始框靠中線的前角 (0.93, ±1.57) 斜向開到射擊點 (3.5, 0)，之後原地左右轉著瞄準
     if cycle < 6:
         k = cycle / 6.0
@@ -136,8 +134,7 @@ while True:
     put(sd, "Robot/Battery V", "d", 12.3 - 0.3 * math.sin(t / 3) - (0.8 if shooting else 0))
     put(sd, "Robot/Match Time", "d", max(0.0, 180 - t % 180))
 
-    put(sd, "Shooter/TopTargetRPS", "d", top_t); put(sd, "Shooter/Top Actual RPS", "d", top_a)
-    put(sd, "Shooter/BottomTargetRPS", "d", bot_t); put(sd, "Shooter/Bottom Actual RPS", "d", bot_a)
+    put(sd, "Shooter/TopTargetRPS", "d", top_t); put(sd, "Shooter/BottomTargetRPS", "d", bot_t)
     put(sd, "Shooter/At Target Velocity", "b", ready_sh)
     tgt = tune_hood.get()
     if tgt >= 0:
@@ -145,6 +142,7 @@ while True:
         put(sd, "Hood/Target (Rotations)", "d", tgt / 360.0)
     hd = hood_deg_state[0] if tgt >= 0 else ho * 360
     put(sd, "Hood/Position (Degrees)", "d", hd); put(sd, "Hood/Position (Rotations)", "d", hd / 360.0)
+    # 實際轉速跟著填表工具的 Tune/Shooter RPS（儀表板改轉速時看得到變化）
     put(sd, "Shooter/Top Actual RPS", "d", tune_rps.get() * 0.85); put(sd, "Shooter/Bottom Actual RPS", "d", tune_rps.get() * 1.15)
     put(sd, "Hood/At Target", "b", ramp >= 1.0)
     put(sd, "Feeder/Position (Rotations)", "d", balls / 6.0)

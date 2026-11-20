@@ -1,0 +1,10 @@
+# Orin Nano（JetPack 6.0、Python 3.10）視覺節點要的 Python 套件。
+# Orin 在機器人網路上不能上網：先在有網路的電腦下載 aarch64 / cp310 的 wheel，再複製過去離線安裝：
+#   pip download -r requirements-orin.txt --platform manylinux2014_aarch64 --python-version 3.10 --only-binary=:all: -d wheels
+#   （到 Orin 上）pip install --user --no-index --find-links wheels -r requirements-orin.txt
+# TensorRT 的 Python 綁定不在 pip：用 NVIDIA 官方 python3-libnvinfer_8.6.2.3-1+cuda12.2_arm64.deb 以 dpkg-deb -x 解到 trt_py/
+# （run_vision.sh 會把它加進 PYTHONPATH）。不需要 PyTorch、pyntcore。
+numpy==1.26.4
+opencv-python==4.10.0.84
+websocket-client
+msgpack

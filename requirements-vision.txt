@@ -1,0 +1,19 @@
+# 筆電 .venv_vision：訓練、離線測試、回歸測試、記錄器
+#   python -m venv .venv_vision
+#   .venv_vision\Scripts\python.exe -m pip install -r requirements-vision.txt
+# PyTorch 用 CPU 版即可（訓練在這台跑時再換 CUDA 版）：
+#   --index-url https://download.pytorch.org/whl/cpu
+# 版本 = 2026-11-20 這台筆電上實際在用、確認可以跑的版本
+ultralytics==8.4.210
+torch==2.15.0
+torchvision==0.29.2
+opencv-python==5.0.0.93
+numpy==2.5.4
+pillow==13.0.0
+matplotlib==3.11.2
+onnx==1.23.2
+onnxruntime==1.31.1
+onnxslim==0.1.99
+pyntcore==2026.2.2
+msgpack==1.2.4
+websocket-client==1.9.2

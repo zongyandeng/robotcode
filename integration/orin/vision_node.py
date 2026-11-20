@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Orin Nano 視覺節點：RealSense + YOLO11n-seg -> 12 個孔的 3D 位置 + 亮燈小孔 -> NetworkTables。
+"""Orin Nano 視覺節點：USB 相機／RealSense + YOLO11n-seg -> 12 個孔的 3D 位置 + 亮燈小孔 -> NetworkTables。
 
 孔的編號（Java 端用同一套）：index = row * 3 + col
     row 0 = 最上排 3 個小孔（col 0..2 由左到右）
@@ -17,12 +17,16 @@
   python vision_node.py --model best.engine --source realsense --server 10.12.34.2
   # 離線測試（任何電腦，不需 roboRIO／RealSense）：對照片跑一遍，印 JSON，並輸出疊圖
   python vision_node.py --model best.pt --source images --path ./imgs --no-nt --debug-dir ./dbg
+
+相機校正值（焦距、距離修正）放在同資料夾的 calibration.json，命令列參數可以覆蓋。
 """
 import argparse
+import collections
 import glob
 import json
 import math
 import os
+import threading
 import time
 
 import cv2
@@ -30,6 +34,10 @@ import numpy as np
 
 NAN = float("nan")
 BIG, SMALL = "hole_big", "hole_small"
+HERE = os.path.dirname(os.path.abspath(__file__))
+
+# calibration.json 不存在、或少了某個欄位時用的預設值
+CALIB_DEFAULTS = dict(fx=1057.0, dist_scale=1.1905, dist_offset=-0.6872, hfov_deg=69.0, camera_pitch_deg=0.0)
 
 
 # ----------------------------------------------------------------------------
@@ -51,10 +59,10 @@ class Hole:
         m = np.zeros((max(y1 - self.y0, 1), max(x1 - self.x0, 1)), np.uint8)
         cv2.fillPoly(m, [(self.poly - [self.x0, self.y0]).astype(np.int32)], 1)
         self.mask = m
-        ys, xs = np.nonzero(m)
-        self.area = float(len(xs))
-        self.cx = float(xs.mean()) + self.x0 if len(xs) else NAN
-        self.cy = float(ys.mean()) + self.y0 if len(ys) else NAN
+        mo = cv2.moments(m, binaryImage=True)        # m00 = 像素數，m10/m00、m01/m00 = 像素中心
+        self.area = float(mo["m00"])
+        self.cx = mo["m10"] / mo["m00"] + self.x0 if mo["m00"] else NAN
+        self.cy = mo["m01"] / mo["m00"] + self.y0 if mo["m00"] else NAN
         self.diam = math.sqrt(4.0 * self.area / math.pi)  # 等效直徑（像素）
         self.row = -1
         self.col = -1
@@ -66,49 +74,20 @@ class Hole:
 
 def detect_holes(model, frame, imgsz, conf):
     if hasattr(model, "predict_polys"):   # trt_seg.SegModel（TensorRT / ONNX Runtime，不需要 PyTorch）
-        holes = []
-        for cls, poly in model.predict_polys(frame, conf):
-            h = Hole(cls, poly, frame.shape)
-            if h.area > 20:
-                holes.append(h)
-        return holes
-    r = model.predict(frame, imgsz=imgsz, conf=conf, verbose=False)[0]
-    holes = []
-    if r.masks is None:
-        return holes
-    names = r.names
-    for k, poly in enumerate(r.masks.xy):
-        if len(poly) < 3:
-            continue
-        cls = names[int(r.boxes.cls[k])]
-        h = Hole(cls, np.asarray(poly), frame.shape)
-        if h.area > 20:
-            holes.append(h)
-    return holes
+        raw = model.predict_polys(frame, conf)
+    else:
+        r = model.predict(frame, imgsz=imgsz, conf=conf, verbose=False)[0]
+        if r.masks is None:
+            return []
+        raw = [(r.names[int(r.boxes.cls[k])], np.asarray(poly))
+               for k, poly in enumerate(r.masks.xy) if len(poly) >= 3]
+    holes = [Hole(cls, poly, frame.shape) for cls, poly in raw]
+    return [h for h in holes if h.area > 20]
 
 
 # ----------------------------------------------------------------------------
 # 把孔排成 3x4 格（容忍板子有點歪）
 # ----------------------------------------------------------------------------
-def _split3(vals):
-    """1D 值切成 3 群，回傳 (群編號list，總平方誤差)。"""
-    n = len(vals)
-    order = np.argsort(vals)
-    v = np.asarray(vals)[order]
-    best = (None, 1e18)
-    for i in range(1, n - 1):
-        for j in range(i + 1, n):
-            groups = [v[:i], v[i:j], v[j:]]
-            sse = sum(float(((g - g.mean()) ** 2).sum()) for g in groups)
-            if sse < best[1]:
-                best = ((i, j), sse)
-    (i, j), sse = best
-    lab = np.zeros(n, int)
-    lab[order[i:j]] = 1
-    lab[order[j:]] = 2
-    return lab, sse
-
-
 def _gap_cluster(vals, thr):
     """1D 依間隔分群：排序後相鄰差距 > thr 就切開。回傳每個值的群編號（由小到大 0,1,2...）與群數。"""
     order = np.argsort(vals)
@@ -228,16 +207,20 @@ def assign_grid(holes):
 
 
 # ----------------------------------------------------------------------------
-# 亮燈判斷：每個小孔外圍的環狀區域，算紅色像素比例
+# 孔外圍的環狀區域（亮燈判斷與深度都用）
 # ----------------------------------------------------------------------------
-def red_fraction(frame_bgr, hole, inner=0.10, outer=0.70):
-    """環狀區域 = 孔邊緣外 inner*d 到 outer*d。回傳紅色像素比例。"""
+def ring_mask(hole, inner, outer):
+    """孔區塊內的環狀遮罩（bool）：孔邊緣往外 inner*d 到 outer*d（d = 孔的等效直徑）。"""
     d = max(hole.diam, 6.0)
     k_in = max(int(inner * d), 1)
     k_out = max(int(outer * d), k_in + 2)
     ker = lambda k: cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2 * k + 1, 2 * k + 1))
-    ring = cv2.dilate(hole.mask, ker(k_out)) - cv2.dilate(hole.mask, ker(k_in))
-    ring = ring.astype(bool)
+    return (cv2.dilate(hole.mask, ker(k_out)) - cv2.dilate(hole.mask, ker(k_in))).astype(bool)
+
+
+def red_fraction(frame_bgr, hole, inner=0.10, outer=0.70):
+    """環狀區域內紅色像素的比例。"""
+    ring = ring_mask(hole, inner, outer)
     if ring.sum() < 20:
         return 0.0
     hsv = cv2.cvtColor(hole.crop(frame_bgr), cv2.COLOR_BGR2HSV)   # 只轉孔周圍的區塊
@@ -265,12 +248,7 @@ def pick_lit(frame_bgr, holes, min_score=0.04, max_second_ratio=0.5):
 # 3D：孔中心的像素 + 孔周圍「板子上」的深度（不能取孔內，孔後面是遠處的牆）
 # ----------------------------------------------------------------------------
 def hole_depth(depth_m, hole, inner=0.15, outer=0.55):
-    d = max(hole.diam, 6.0)
-    k_in = max(int(inner * d), 1)
-    k_out = max(int(outer * d), k_in + 2)
-    ker = lambda k: cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2 * k + 1, 2 * k + 1))
-    ring = (cv2.dilate(hole.mask, ker(k_out)) - cv2.dilate(hole.mask, ker(k_in))).astype(bool)
-    v = hole.crop(depth_m)[ring]
+    v = hole.crop(depth_m)[ring_mask(hole, inner, outer)]
     v = v[(v > 0.2) & (v < 8.0)]
     if len(v) < 15:
         return NAN
@@ -346,8 +324,13 @@ def to_target(hole, depth_m, K, cam_pitch_deg):
     return bearing, pitch, horiz, -y2
 
 
+def pixel_elev(h, K):
+    """孔中心相對準心（光軸）的上下角度，往上為正（度），只用像素。"""
+    return math.degrees(math.atan2(K[3] - h.cy, K[1]))
+
+
 # ----------------------------------------------------------------------------
-# 一幀 -> 結果 dict
+# 看不到小孔時決定排號
 # ----------------------------------------------------------------------------
 class RowAnchor:
     """沒看到小孔時決定排號。
@@ -366,6 +349,8 @@ class RowAnchor:
         # 機器人沒移動時這個值固定。看得到小孔（排號確定）時記下；看不到小孔時用「記下的值 - 目前仰角」預測每排在畫面的位置。
         # 只用像素與仰角讀數，不經過 PnP（只看到兩排大孔、擠在畫面邊緣時，PnP 的鏡頭高度會錯一公尺以上）。
         self.row_ang = {}
+        if path is None:
+            return
         try:
             with open(path) as f:
                 self.ref = float(json.load(f)["cam_y"])
@@ -383,18 +368,13 @@ class RowAnchor:
     def learn(self, cam_y):
         self.ref = cam_y if self.ref is None else 0.9 * self.ref + 0.1 * cam_y
         now = time.time()
-        if now - self._saved > 5.0:
+        if self.path is not None and now - self._saved > 5.0:
             self._saved = now
             try:
                 with open(self.path, "w") as f:
                     json.dump({"cam_y": self.ref}, f)
             except OSError:
                 pass
-
-
-def pixel_elev(h, K):
-    """孔中心相對準心（光軸）的上下角度，往上為正（度），只用像素。"""
-    return math.degrees(math.atan2(K[3] - h.cy, K[1]))
 
 
 def solve_board(holes, K, anchor, hood_deg=None, hood_still=True):
@@ -450,64 +430,79 @@ def solve_board(holes, K, anchor, hood_deg=None, hood_still=True):
     return pnp, shift, "camY"
 
 
-def process(model, frame_bgr, depth_m, K, args):
-    holes = detect_holes(model, frame_bgr, args.imgsz, args.conf)
-    grid_ok = assign_grid(holes)
-    lit, scores = pick_lit(frame_bgr, holes, args.red_min, args.red_second_ratio)
-    n = 12
-    out = dict(bearing=[NAN] * n, pitch=[NAN] * n, dist=[NAN] * n, height=[NAN] * n, elev=[NAN] * n)
-    hood_fn = getattr(args, "hood_fn", None)
-    hood_deg = hood_fn() if hood_fn is not None else None
-    # 仰角是否靜止（最近 0.3 秒內變化 < 0.3 度）：只有靜止時才學每排的位置。
-    # 仰角快速移動時（約 100 度/秒），畫面和仰角讀數差 0.1 秒就差 10 度，學到的位置會錯一排（2026-11-17 孔 10 瞄到第二排）
-    hood_still = False
-    if hood_deg is not None:
-        hist = getattr(args, "_hood_hist", None)
-        if hist is None:
-            hist = args._hood_hist = []
-        now = time.time()
-        hist.append((now, hood_deg))
-        while hist and now - hist[0][0] > 0.3:
-            hist.pop(0)
-        hood_still = len(hist) >= 3 and now - hist[0][0] > 0.2 and max(h for _, h in hist) - min(h for _, h in hist) < 0.3
-    pnp, row_shift, row_method = (solve_board(holes, K, getattr(args, "row_anchor", None), hood_deg, hood_still)
-                                  if (depth_m is None and grid_ok) else (None, 0, "none"))
-    out["row_shift"] = row_shift
-    out["row_method"] = row_method
-    out["hood_deg"] = hood_deg
-    out["cam_y"] = pnp[4] if pnp is not None else NAN
-    anchor = getattr(args, "row_anchor", None)
-    out["anchor_ref"] = anchor.ref if anchor is not None else None
-    if pnp is not None:
-        # 沒有深度相機：用板子尺寸解位姿，12 個孔（含畫面外的）都有偏角、仰角、距離、高度
-        targets, err, board_dist, elev, _ = pnp
-        out["elev"] = [float(e) for e in elev]
+# ----------------------------------------------------------------------------
+# 一幀 -> 結果 dict
+# ----------------------------------------------------------------------------
+class VisionPipeline:
+    """偵測 -> 排格子 -> 亮燈 -> 位姿 -> 12 個孔的目標值。跨幀的狀態（仰角歷史、排號基準）都放在這裡。"""
+
+    def __init__(self, model, args, anchor=None):
+        self.model = model
+        self.imgsz, self.conf = args.imgsz, args.conf
+        self.red_min, self.red_second_ratio = args.red_min, args.red_second_ratio
+        self.camera_pitch_deg = args.camera_pitch_deg
         # 經驗修正（廣角鏡頭變形讓近距離被高估）：實際 = dist_scale * 讀數 + dist_offset，高度依同比例縮放
-        ks, ko = getattr(args, "dist_scale", 1.0), getattr(args, "dist_offset", 0.0)
-        corr = lambda d: ks * d + ko
-        for i, (b, p, d, ht) in enumerate(targets):
-            dc = corr(d)
-            out["bearing"][i], out["pitch"][i], out["dist"][i], out["height"][i] = b, p, dc, ht * dc / d
-        board_dist = corr(board_dist)
-    elif depth_m is None:
-        # 沒有深度相機又解不出位姿：編號很可能錯了（例如分排失敗），寧可這一幀不給目標，也不要讓機器人瞄錯孔
-        grid_ok = False
-        err, board_dist = NAN, NAN
-    else:
-        for h in holes:
-            if h.row < 0 or h.col < 0:
-                continue
-            i = h.row * 3 + h.col
-            b, p, d, ht = to_target(h, depth_m, K, args.camera_pitch_deg)
-            out["bearing"][i], out["pitch"][i], out["dist"][i], out["height"][i] = b, p, d, ht
-            out["elev"][i] = math.degrees(math.atan2(K[3] - h.cy, K[1]))   # 相對準心，往上為正
-        err, board_dist = NAN, NAN
-    out["pnp_err_px"], out["board_dist_m"] = err, board_dist
-    out.update(grid_ok=bool(grid_ok), lit_small=int(lit), red_score=[float(s) for s in scores],
-               n_big=sum(h.cls == BIG for h in holes), n_small=sum(h.cls == SMALL for h in holes))
-    return out, holes
+        self.dist_scale, self.dist_offset = args.dist_scale, args.dist_offset
+        self.anchor = anchor
+        self._hood_hist = collections.deque()          # (時間, 仰角)
+
+    def _hood_still(self, t, hood_deg):
+        """仰角是否靜止（最近 0.3 秒內變化 < 0.3 度）：只有靜止時才學每排的位置。
+        仰角快速移動時（約 100 度/秒），畫面和仰角讀數差 0.1 秒就差 10 度，學到的位置會錯一排（2026-11-17 孔 10 瞄到第二排）"""
+        hist = self._hood_hist
+        hist.append((t, hood_deg))
+        while hist and t - hist[0][0] > 0.3:
+            hist.popleft()
+        return len(hist) >= 3 and t - hist[0][0] > 0.2 and max(h for _, h in hist) - min(h for _, h in hist) < 0.3
+
+    def process(self, frame_bgr, depth_m, K, hood_deg=None, t_cap=None):
+        """hood_deg：拍這一幀當下的仰角讀數（度，沒有就 None）。t_cap：拍照時間（time.time()）。"""
+        holes = detect_holes(self.model, frame_bgr, self.imgsz, self.conf)
+        grid_ok = assign_grid(holes)
+        lit, scores = pick_lit(frame_bgr, holes, self.red_min, self.red_second_ratio)
+        n = 12
+        out = dict(bearing=[NAN] * n, pitch=[NAN] * n, dist=[NAN] * n, height=[NAN] * n, elev=[NAN] * n)
+        hood_still = self._hood_still(t_cap if t_cap is not None else time.time(), hood_deg) if hood_deg is not None else False
+        pnp, row_shift, row_method = (solve_board(holes, K, self.anchor, hood_deg, hood_still)
+                                      if (depth_m is None and grid_ok) else (None, 0, "none"))
+        out["row_shift"] = row_shift
+        out["row_method"] = row_method
+        out["hood_deg"] = hood_deg
+        out["cam_y"] = pnp[4] if pnp is not None else NAN
+        out["anchor_ref"] = self.anchor.ref if self.anchor is not None else None
+        if pnp is not None:
+            # 沒有深度相機：用板子尺寸解位姿，12 個孔（含畫面外的）都有偏角、仰角、距離、高度
+            targets, err, board_dist, elev, _ = pnp
+            out["elev"] = [float(e) for e in elev]
+            corr = lambda d: self.dist_scale * d + self.dist_offset
+            for i, (b, p, d, ht) in enumerate(targets):
+                dc = corr(d)
+                out["bearing"][i], out["pitch"][i], out["dist"][i], out["height"][i] = b, p, dc, ht * dc / d
+            board_dist = corr(board_dist)
+        elif depth_m is None:
+            # 沒有深度相機又解不出位姿：編號很可能錯了（例如分排失敗），寧可這一幀不給目標，也不要讓機器人瞄錯孔
+            grid_ok = False
+            err, board_dist = NAN, NAN
+        else:
+            for h in holes:
+                if h.row < 0 or h.col < 0:
+                    continue
+                i = h.row * 3 + h.col
+                b, p, d, ht = to_target(h, depth_m, K, self.camera_pitch_deg)
+                out["bearing"][i], out["pitch"][i], out["dist"][i], out["height"][i] = b, p, d, ht
+                out["elev"][i] = pixel_elev(h, K)   # 相對準心，往上為正
+            err, board_dist = NAN, NAN
+        out["pnp_err_px"], out["board_dist_m"] = err, board_dist
+        out.update(grid_ok=bool(grid_ok), lit_small=int(lit), red_score=[float(s) for s in scores],
+                   n_big=sum(h.cls == BIG for h in holes), n_small=sum(h.cls == SMALL for h in holes))
+        # 拍照到算完的時間（毫秒）：roboRIO 可用「收到時間 - latency_ms」對齊里程計／仰角
+        out["latency_ms"] = (time.time() - t_cap) * 1000.0 if t_cap is not None else NAN
+        return out, holes
 
 
+# ----------------------------------------------------------------------------
+# 疊圖
+# ----------------------------------------------------------------------------
 def draw_aim(img, holes, res):
     """串流畫面正中央的準心，以及離準心最近那個孔的距離／偏角／仰角（實測比對、校正用）。"""
     h, w = img.shape[:2]
@@ -527,7 +522,6 @@ def draw_aim(img, holes, res):
         cv2.line(img, (cx, cy), (int(near.cx), int(near.cy)), (0, 255, 0), 1)
         lines.append(f"#{i}  dist {d:.2f} m  bearing {b:+.1f}  pitch {p:+.1f}")
         lines.append(f"elev {e:+.1f} (+ = hole above cross)")
-    anc = res.get("anchor_ref")
     if res.get("cam_y") == res.get("cam_y"):                  # 不是 NaN
         hd = res.get("hood_deg")
         lines.append(f"rows by {res.get('row_method', '?')} shift {res.get('row_shift', 0)}  hood "
@@ -557,30 +551,67 @@ def draw_debug(frame, holes, result):
 # ----------------------------------------------------------------------------
 # NetworkTables 發布
 # ----------------------------------------------------------------------------
-class NTSinkLite:
+# /Vision/ 底下發布的 topic：(名稱, 型別, 結果 dict 的欄位)。兩種實作（pyntcore / nt4_lite）共用這張表，
+# 依這個順序寫入，frame_id 永遠最後（Java 端以 frame_id 變動當作「新的一幀」）。
+VISION_TOPICS = [
+    ("grid_ok", "boolean", "grid_ok"),
+    ("lit_small", "int", "lit_small"),
+    ("n_big", "int", "n_big"),
+    ("n_small", "int", "n_small"),
+    ("fps", "double", "fps"),
+    ("red_score", "double[]", "red_score"),
+    ("bearing_deg", "double[]", "bearing"),
+    ("pitch_deg", "double[]", "pitch"),
+    ("dist_m", "double[]", "dist"),
+    ("height_m", "double[]", "height"),
+    ("elev_deg", "double[]", "elev"),            # 孔相對準心的上下角度（往上為正）
+    ("latency_ms", "double", "latency_ms"),      # 拍照到發布的延遲（毫秒）
+]
+HOOD_TOPIC = "/SmartDashboard/Hood/Position (Degrees)"   # roboRIO 發布的仰角機構角度（度），用來判斷看不到小孔時的排號
+
+
+def _server_of(team, server):
+    if server:
+        return server
+    if not team:
+        raise SystemExit("需要 --team 或 --server")
+    t = int(team)
+    return f"10.{t // 100}.{t % 100}.2"
+
+
+class _SinkBase:
+    """publish()：先寫資料，最後才更新 frame_id。子類別提供 _pub(名稱, 型別) 與 _flush()。"""
+
+    def _setup(self):
+        self._pubs = [(self._pub(name, typ), key) for name, typ, key in VISION_TOPICS]
+        self.frame_id = self._pub("frame_id", "int")
+        self._n = 0
+
+    def publish(self, r, fps):
+        r = dict(r, fps=fps)
+        for pub, key in self._pubs:
+            pub.set(r[key])
+        self._n += 1
+        self.frame_id.set(self._n)
+        self._flush()
+
+
+class NTSinkLite(_SinkBase):
     """沒有 pyntcore 時用的版本（Orin 的 Python 3.10 + aarch64 沒有 pyntcore 套件），走 nt4_lite.py。
     發布的 topic 名稱與型別和 NTSink 完全相同，roboRIO 端看不出差別。"""
 
     def __init__(self, team, server, name="orin-vision"):
         from nt4_lite import NT4Lite
-        if not server:
-            if not team:
-                raise SystemExit("需要 --team 或 --server")
-            t = int(team)
-            server = f"10.{t // 100}.{t % 100}.2"
-        self.nt = NT4Lite(server, name)
-        p = lambda n, typ: self.nt.publish("/Vision/" + n, typ)
-        # 順序跟 NTSink.publish 一樣：資料先，frame_id 最後（flush 時依加入順序打包送出）
-        self.grid_ok = p("grid_ok", "boolean"); self.lit = p("lit_small", "int")
-        self.n_big = p("n_big", "int"); self.n_small = p("n_small", "int"); self.fps = p("fps", "double")
-        self.red = p("red_score", "double[]"); self.bearing = p("bearing_deg", "double[]")
-        self.pitch = p("pitch_deg", "double[]"); self.dist = p("dist_m", "double[]")
-        self.height = p("height_m", "double[]"); self.elev = p("elev_deg", "double[]")
-        self.frame_id = p("frame_id", "int")
+        self.nt = NT4Lite(_server_of(team, server), name)
+        self._setup()
         self._enable = self.nt.subscribe("/Vision/enable", default=True)
-        # roboRIO 發布的仰角機構角度（度），用來判斷看不到小孔時的排號
-        self._hood = self.nt.subscribe("/SmartDashboard/Hood/Position (Degrees)", default=None)
-        self._n = 0
+        self._hood = self.nt.subscribe(HOOD_TOPIC, default=None)
+
+    def _pub(self, name, typ):
+        return self.nt.publish("/Vision/" + name, typ)
+
+    def _flush(self):
+        self.nt.flush()
 
     def hood_deg(self):
         v = self._hood.get()
@@ -589,14 +620,40 @@ class NTSinkLite:
     def enabled(self):
         return bool(self._enable.get())
 
-    def publish(self, r, fps):
-        self.grid_ok.set(r["grid_ok"]); self.lit.set(r["lit_small"])
-        self.n_big.set(r["n_big"]); self.n_small.set(r["n_small"]); self.fps.set(fps)
-        self.red.set(r["red_score"]); self.bearing.set(r["bearing"]); self.pitch.set(r["pitch"])
-        self.dist.set(r["dist"]); self.height.set(r["height"]); self.elev.set(r["elev"])
-        self._n += 1
-        self.frame_id.set(self._n)
-        self.nt.flush()
+
+class NTSink(_SinkBase):
+    def __init__(self, team, server, name="orin-vision"):
+        import ntcore
+        self.inst = ntcore.NetworkTableInstance.getDefault()
+        self.inst.startClient4(name)
+        if server:
+            self.inst.setServer(server)
+        elif team:
+            self.inst.setServerTeam(int(team))
+        else:
+            raise SystemExit("需要 --team 或 --server")
+        self._table = self.inst.getTable("Vision")
+        self._setup()
+        # roboRIO 發布的開關：false = 不拍照、不跑辨識（自主開場移動期間關閉，到定點才開）
+        # 沒有人發布時預設 True，所以沒接 roboRIO 也會照常運作
+        self._enable = self._table.getBooleanTopic("enable").subscribe(True)
+        self._hood = self.inst.getDoubleTopic(HOOD_TOPIC).subscribe(NAN)
+
+    def _pub(self, name, typ):
+        t = self._table
+        getter = {"boolean": t.getBooleanTopic, "int": t.getIntegerTopic, "double": t.getDoubleTopic,
+                  "double[]": t.getDoubleArrayTopic}[typ]
+        return getter(name).publish()
+
+    def _flush(self):
+        self.inst.flush()
+
+    def hood_deg(self):
+        v = self._hood.get()
+        return float(v) if math.isfinite(v) else None
+
+    def enabled(self):
+        return bool(self._enable.get())
 
 
 def make_nt_sink(team, server):
@@ -611,63 +668,17 @@ def make_nt_sink(team, server):
     return NTSinkLite(team, server)
 
 
-class NTSink:
-    def __init__(self, team, server, name="orin-vision"):
-        import ntcore
-        self.inst = ntcore.NetworkTableInstance.getDefault()
-        self.inst.startClient4(name)
-        if server:
-            self.inst.setServer(server)
-        elif team:
-            self.inst.setServerTeam(int(team))
-        else:
-            raise SystemExit("需要 --team 或 --server")
-        t = self.inst.getTable("Vision")
-        self.frame_id = t.getIntegerTopic("frame_id").publish()
-        self.grid_ok = t.getBooleanTopic("grid_ok").publish()
-        self.lit = t.getIntegerTopic("lit_small").publish()
-        self.n_big = t.getIntegerTopic("n_big").publish()
-        self.n_small = t.getIntegerTopic("n_small").publish()
-        self.fps = t.getDoubleTopic("fps").publish()
-        self.red = t.getDoubleArrayTopic("red_score").publish()
-        self.bearing = t.getDoubleArrayTopic("bearing_deg").publish()
-        self.pitch = t.getDoubleArrayTopic("pitch_deg").publish()
-        self.dist = t.getDoubleArrayTopic("dist_m").publish()
-        self.height = t.getDoubleArrayTopic("height_m").publish()
-        self.elev = t.getDoubleArrayTopic("elev_deg").publish()   # 孔相對準心的上下角度（往上為正）
-        # roboRIO 發布的開關：false = 不拍照、不跑辨識（自主開場移動期間關閉，到定點才開）
-        # 沒有人發布時預設 True，所以沒接 roboRIO 也會照常運作
-        self._enable = t.getBooleanTopic("enable").subscribe(True)
-        self._hood = self.inst.getTable("SmartDashboard").getDoubleTopic("Hood/Position (Degrees)").subscribe(NAN)
-        self._n = 0
-
-    def hood_deg(self):
-        v = self._hood.get()
-        return float(v) if math.isfinite(v) else None
-
-    def enabled(self):
-        return bool(self._enable.get())
-
-    def publish(self, r, fps):
-        # 先寫資料，最後才更新 frame_id，Java 端以 frame_id 變動當作「新的一幀」
-        self.grid_ok.set(r["grid_ok"]); self.lit.set(r["lit_small"])
-        self.n_big.set(r["n_big"]); self.n_small.set(r["n_small"]); self.fps.set(fps)
-        self.red.set(r["red_score"]); self.bearing.set(r["bearing"]); self.pitch.set(r["pitch"])
-        self.dist.set(r["dist"]); self.height.set(r["height"]); self.elev.set(r["elev"])
-        self._n += 1
-        self.frame_id.set(self._n)
-        self.inst.flush()
-
-
 # ----------------------------------------------------------------------------
 # MJPEG 串流（給儀表板的相機畫面；瀏覽器直接用 <img src="http://orin:1181/stream.mjpg"> 就能看）
 # ----------------------------------------------------------------------------
 class MJPEGServer:
-    def __init__(self, port, quality=70):
-        import threading
+    """width > 0 時先縮到這個寬度再編碼（儀表板顯示的尺寸遠小於 1280，縮小後編碼與傳輸都省很多）。"""
+
+    def __init__(self, port, quality=70, width=640):
         from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
         self.latest = None
-        self.quality = quality
+        self.quality, self.width = quality, width
+        self.cond = threading.Condition()
         outer = self
 
         class H(BaseHTTPRequestHandler):
@@ -684,30 +695,38 @@ class MJPEGServer:
                 last = None
                 try:
                     while True:
-                        jpg = outer.latest
-                        if jpg is not None and jpg is not last:
-                            head = b"--frame\r\nContent-Type: image/jpeg\r\nContent-Length: %d\r\n\r\n" % len(jpg)
-                            self.wfile.write(head)
-                            self.wfile.write(jpg)
-                            self.wfile.write(b"\r\n")
-                            last = jpg
-                        time.sleep(0.03)
+                        with outer.cond:     # 等下一張（最多 1 秒，順便偵測連線是否還在）
+                            outer.cond.wait_for(lambda: outer.latest is not last, timeout=1.0)
+                            jpg = outer.latest
+                        if jpg is None or jpg is last:
+                            continue
+                        head = b"--frame\r\nContent-Type: image/jpeg\r\nContent-Length: %d\r\n\r\n" % len(jpg)
+                        self.wfile.write(head)
+                        self.wfile.write(jpg)
+                        self.wfile.write(b"\r\n")
+                        last = jpg
                 except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
                     pass
 
         self.httpd = ThreadingHTTPServer(("0.0.0.0", port), H)
+        self.httpd.daemon_threads = True
         threading.Thread(target=self.httpd.serve_forever, daemon=True).start()
 
     def update(self, bgr):
+        h, w = bgr.shape[:2]
+        if self.width and w > self.width:
+            bgr = cv2.resize(bgr, (self.width, int(round(h * self.width / w))), interpolation=cv2.INTER_AREA)
         ok, buf = cv2.imencode(".jpg", bgr, [cv2.IMWRITE_JPEG_QUALITY, self.quality])
         if ok:
-            self.latest = buf.tobytes()
+            with self.cond:
+                self.latest = buf.tobytes()
+                self.cond.notify_all()
 
 
 # ----------------------------------------------------------------------------
-# 影像來源
+# 影像來源：每一幀 yield (BGR, 深度或 None, K, 拍照時間, 拍照當下的仰角或 None)
 # ----------------------------------------------------------------------------
-def realsense_frames(w=640, h=480, fps=30):
+def realsense_frames(w=640, h=480, fps=30, hood_fn=None):
     import pyrealsense2 as rs
     pipe = rs.pipeline()
     cfg = rs.config()
@@ -729,10 +748,12 @@ def realsense_frames(w=640, h=480, fps=30):
     try:
         while True:
             fs = align.process(pipe.wait_for_frames())
+            t_cap = time.time()
+            hood = hood_fn() if hood_fn else None
             c, d = fs.get_color_frame(), fs.get_depth_frame()
             if not c or not d:
                 continue
-            yield np.asanyarray(c.get_data()), np.asanyarray(d.get_data()).astype(np.float32) * scale, K
+            yield np.asanyarray(c.get_data()), np.asanyarray(d.get_data()).astype(np.float32) * scale, K, t_cap, hood
     finally:
         pipe.stop()
 
@@ -825,9 +846,45 @@ class ExposureControl:
             self._v4l2(exposure_time_absolute=new)
 
 
-def uvc_frames(index, w, h, hfov_deg, rotate180=False, exposure=None, mirror=False, fx1280=None):
+class FrameGrabber:
+    """另一條執行緒一直讀相機，只留最新的一幀（含拍照時間、拍照當下的仰角讀數）。
+    主迴圈拿到的永遠是最新畫面，不會因為辨識比相機慢而處理到舊畫面；仰角也和畫面同一時間讀，排號判斷才準。"""
+
+    def __init__(self, cap, hood_fn=None):
+        self.cap, self.hood_fn = cap, hood_fn
+        self.cond = threading.Condition()
+        self.item, self.seq = None, 0
+        self.running = True
+        threading.Thread(target=self._run, daemon=True).start()
+
+    def _run(self):
+        while self.running:
+            ok, img = self.cap.read()
+            if not ok:
+                time.sleep(0.01)
+                continue
+            t_cap = time.time()
+            hood = self.hood_fn() if self.hood_fn else None
+            with self.cond:
+                self.item, self.seq = (img, t_cap, hood), self.seq + 1
+                self.cond.notify_all()
+
+    def frames(self):
+        last = 0
+        while True:
+            with self.cond:
+                self.cond.wait_for(lambda: self.seq != last)
+                last = self.seq
+                item = self.item
+            yield item
+
+    def stop(self):
+        self.running = False
+
+
+def uvc_frames(index, w, h, hfov_deg, rotate180=False, exposure=None, mirror=False, fx1280=None, hood_fn=None):
     """一般攝影機（OpenCV 開得到的都行，例如 Orbbec 的彩色 UVC）。只有彩色、沒有深度：
-    孔的偏角／仰角照算，距離與高度為 NaN。內參用水平視角估。exposure：ExposureControl（可省略）。"""
+    孔的偏角／仰角照算，距離與高度為 NaN（solvePnP 會補上）。內參用 --fx 或水平視角估。exposure：ExposureControl（可省略）。"""
     backend = cv2.CAP_DSHOW if os.name == "nt" else cv2.CAP_V4L2
     if isinstance(index, str):      # 固定路徑（例如 /dev/v4l/by-id/...-video-index0），重插 USB 後編號變了也找得到
         index = os.path.realpath(index)
@@ -842,22 +899,23 @@ def uvc_frames(index, w, h, hfov_deg, rotate180=False, exposure=None, mirror=Fal
     cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)   # 只留最新一幀，降低延遲
     if exposure is not None:
         exposure.attach(cap, index)
+    grab = FrameGrabber(cap, hood_fn)
+    K = None
     try:
-        while True:
-            ok, img = cap.read()
-            if not ok:
-                time.sleep(0.01)
-                continue
+        for img, t_cap, hood in grab.frames():
             if rotate180:
                 img = cv2.rotate(img, cv2.ROTATE_180)
             if mirror:
                 # 相機輸出左右相反時翻回來。一定要在辨識前做：否則偏角正負號、左中右欄編號都會反過來
                 img = cv2.flip(img, 1)
             ih, iw = img.shape[:2]
-            # 焦距：有校正值（--fx，以 1280 寬為準）就用，否則用水平視角估
-            fx = fx1280 * iw / 1280.0 if fx1280 else (iw / 2) / math.tan(math.radians(hfov_deg) / 2)
-            yield img, None, (fx, fx, iw / 2, ih / 2)
+            if K is None or K[2] != iw / 2 or K[3] != ih / 2:
+                # 焦距：有校正值（--fx，以 1280 寬為準）就用，否則用水平視角估
+                fx = fx1280 * iw / 1280.0 if fx1280 else (iw / 2) / math.tan(math.radians(hfov_deg) / 2)
+                K = (fx, fx, iw / 2, ih / 2)
+            yield img, None, K, t_cap, hood
     finally:
+        grab.stop()
         cap.release()
 
 
@@ -877,7 +935,6 @@ class Watchdog:
     交給 systemd（Restart=always）重新啟動。第一幀前給較長的 startup 秒數（載入 TensorRT 引擎要時間）。"""
 
     def __init__(self, timeout, startup=30.0, poll=1.0):
-        import threading
         self.timeout, self.startup, self.poll = timeout, max(startup, timeout), poll
         self.t0 = time.time()
         self.t = None
@@ -897,7 +954,28 @@ class Watchdog:
                 os._exit(3)
 
 
-def main():
+# ----------------------------------------------------------------------------
+# 主程式
+# ----------------------------------------------------------------------------
+def load_calibration(path):
+    """讀 calibration.json（以 _ 開頭的欄位是說明，略過）；檔案不存在就回傳空 dict。"""
+    try:
+        with open(path, encoding="utf-8") as f:
+            return {k: v for k, v in json.load(f).items() if not k.startswith("_")}
+    except FileNotFoundError:
+        return {}
+
+
+def json_result(name, res):
+    """images 模式印出的一行 JSON（NaN 改成 null、陣列取 3 位小數）。"""
+    def clean(v):
+        if isinstance(v, list):
+            return [None if (isinstance(x, float) and math.isnan(x)) else round(x, 3) for x in v]
+        return v
+    return json.dumps({"image": name, **{k: clean(v) for k, v in res.items()}}, ensure_ascii=False)
+
+
+def parse_args(argv=None):
     ap = argparse.ArgumentParser()
     ap.add_argument("--model", required=True)
     ap.add_argument("--source", choices=["realsense", "images", "uvc"], default="realsense")
@@ -920,47 +998,57 @@ def main():
     ap.add_argument("--server", help="直接指定 roboRIO IP")
     ap.add_argument("--no-nt", action="store_true")
     ap.add_argument("--ignore-enable", action="store_true", help="忽略 roboRIO 的 Vision/enable 開關，永遠拍照辨識（桌上測試用）")
-    ap.add_argument("--camera-pitch-deg", type=float, default=0.0, help="相機向上仰的角度")
-    ap.add_argument("--hfov-deg", type=float, default=69.0, help="images 模式用的水平視角")
-    ap.add_argument("--dist-scale", type=float, default=1.1905,
-                    help="距離經驗修正：實際（鏡頭到板面）= scale * PnP 讀數 + offset。2026-11-13 用車身中心距板 3/3.5/4/5 m"
-                         "（鏡頭在中心前 14 cm）擬合，4 點誤差 <= 7 cm；只在 fx=1057、約 3~5 m 範圍內驗證過")
-    ap.add_argument("--dist-offset", type=float, default=-0.6872, help="距離經驗修正的偏移（公尺），見 --dist-scale")
-    ap.add_argument("--fx", type=float, default=1057.0,
-                    help="uvc 相機焦距（像素，以 1280 寬為準）。由 roboRIO 鎖定的板位欄距（應為 0.90 m）校正：969 時量到 0.982 m，"
-                         "所以 969 x 0.982/0.900 = 1057，讓偏角正確；距離另由 --dist-scale/--dist-offset 修正。0 = 改用 --hfov-deg 估")
+    ap.add_argument("--calib", default=os.path.join(HERE, "calibration.json"),
+                    help="相機校正檔（焦距、距離修正等）。下面幾個參數有給就覆蓋檔案裡的值")
+    ap.add_argument("--camera-pitch-deg", type=float, default=None, help="相機向上仰的角度（只用在有深度的 RealSense）")
+    ap.add_argument("--hfov-deg", type=float, default=None, help="水平視角（images 模式，或沒有 --fx 時估焦距）")
+    ap.add_argument("--dist-scale", type=float, default=None, help="距離經驗修正：實際 = scale * PnP 讀數 + offset（見 calibration.json）")
+    ap.add_argument("--dist-offset", type=float, default=None, help="距離經驗修正的偏移（公尺）")
+    ap.add_argument("--fx", type=float, default=None, help="uvc 相機焦距（像素，以 1280 寬為準）；0 = 改用 --hfov-deg 估")
     ap.add_argument("--red-min", type=float, default=0.04)
     ap.add_argument("--red-second-ratio", type=float, default=0.5)
     ap.add_argument("--debug-dir")
     ap.add_argument("--mjpeg-port", type=int, default=0, help="大於 0 就在這個 port 提供疊圖的 MJPEG 串流（儀表板用，建議 1181）")
+    ap.add_argument("--mjpeg-width", type=int, default=640, help="串流畫面縮到這個寬度再編碼；0 = 原尺寸")
     ap.add_argument("--cam-y-ref", type=float, default=None,
                     help="鏡頭在板子座標的高度基準（公尺，小孔排中心為 0）。通常不用給：看到小孔時會自動學並存到 row_anchor.json")
-    a = ap.parse_args()
-    a.row_anchor = RowAnchor(os.path.join(os.path.dirname(os.path.abspath(__file__)), "row_anchor.json"), a.cam_y_ref)
+    ap.add_argument("--row-anchor", default=os.path.join(HERE, "row_anchor.json"),
+                    help="排號基準的存檔位置；給空字串就不讀也不存（離線測試用）")
+    a = ap.parse_args(argv)
+    calib = {**CALIB_DEFAULTS, **load_calibration(a.calib)}
+    for k in CALIB_DEFAULTS:
+        if getattr(a, k) is None:
+            setattr(a, k, float(calib[k]))
+    return a
 
-    if a.model.endswith((".engine", ".onnx")):
+
+def load_model(path):
+    if path.endswith((".engine", ".onnx")):
         # TensorRT engine / ONNX 走 trt_seg（不 import PyTorch；Orin 的 JetPack 6.0 沒有可用的 GPU 版 PyTorch）
         from trt_seg import SegModel
-        model = SegModel(a.model)
-    else:
-        from ultralytics import YOLO
-        model = YOLO(a.model, task="segment")
+        return SegModel(path)
+    from ultralytics import YOLO
+    return YOLO(path, task="segment")
+
+
+def main(argv=None):
+    a = parse_args(argv)
+    anchor = RowAnchor(a.row_anchor or None, a.cam_y_ref)
+    pipeline = VisionPipeline(load_model(a.model), a, anchor)
     sink = None if a.no_nt else make_nt_sink(a.team, a.server)
-    a.hood_fn = sink.hood_deg if sink is not None else None
+    hood_fn = sink.hood_deg if sink is not None else None
     if a.debug_dir:
         os.makedirs(a.debug_dir, exist_ok=True)
 
     if a.source == "images":
         for name, img, depth, K in image_frames(a.path, a.hfov_deg):
-            res, holes = process(model, img, depth, K, a)
-            print(json.dumps({"image": name, **{k: (v if not isinstance(v, list) else
-                  [None if (isinstance(x, float) and math.isnan(x)) else round(x, 3) for x in v]) for k, v in res.items()}},
-                  ensure_ascii=False))
+            res, holes = pipeline.process(img, depth, K)
+            print(json_result(name, res))
             if a.debug_dir:
                 cv2.imwrite(os.path.join(a.debug_dir, name), draw_debug(img, holes, res))
         return
 
-    stream = MJPEGServer(a.mjpeg_port) if a.mjpeg_port > 0 else None
+    stream = MJPEGServer(a.mjpeg_port, width=a.mjpeg_width) if a.mjpeg_port > 0 else None
     t_stream = 0.0
     t_dbg = 0.0
     t_prev, fps = time.time(), 0.0
@@ -969,23 +1057,22 @@ def main():
     if a.source == "uvc":
         cw, ch = (int(v) for v in a.cam_size.lower().split("x"))
         expo = ExposureControl(a.exposure, a.ae_target, a.ae_max_exp)
-        frames = uvc_frames(a.cam_index, cw, ch, a.hfov_deg, a.rotate180, expo, a.mirror, a.fx or None)
+        frames = uvc_frames(a.cam_index, cw, ch, a.hfov_deg, a.rotate180, expo, a.mirror, a.fx or None, hood_fn)
     else:
-        frames = realsense_frames()
+        frames = realsense_frames(hood_fn=hood_fn)
     wd = Watchdog(a.watchdog) if a.watchdog > 0 else None
-    for img, depth, K in frames:
+    for img, depth, K, t_cap, hood in frames:
         if wd:
             wd.beat()
         # roboRIO 說還不用看（機器人還在移動）：丟掉這一幀，不跑辨識也不發布
-        # RealSense 照常取流（不然緩衝會塞滿），重新開啟時馬上就有最新的畫面
+        # 相機照常取流（不然緩衝會塞滿），重新開啟時馬上就有最新的畫面
         enabled = a.ignore_enable or sink is None or sink.enabled()
         if not enabled:
             was_enabled = False
-            time.sleep(0.01)
             continue
         if not was_enabled:      # 剛被重新開啟：重算 FPS 的起點
             t_prev, fps, was_enabled = time.time(), 0.0, True
-        res, holes = process(model, img, depth, K, a)
+        res, holes = pipeline.process(img, depth, K, hood, t_cap)
         if expo is not None:
             expo.update(img, holes)
         now = time.time()
@@ -1006,7 +1093,7 @@ def main():
             if want_dbg:
                 cv2.imwrite(os.path.join(a.debug_dir, "latest.jpg"), vis)
                 cv2.imwrite(os.path.join(a.debug_dir, "latest_raw.jpg"), img)   # 沒疊圖的原始畫面（校正焦距用）
-                t_dbg = now   # 沒疊圖的原始畫面（校正焦距用）
+                t_dbg = now
 
 
 if __name__ == "__main__":

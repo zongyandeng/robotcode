@@ -30,6 +30,8 @@ RealSense ─► Orin Nano (integration/orin/vision_node.py)
 | `red_score` | double[3] | 三個小孔外圍的紅色像素比例（除錯用） |
 | `grid_ok` | bool | 12 個孔是否都排進格子 |
 | `n_big`, `n_small`, `fps` | | 偵測數量與幀率 |
+| `elev_deg` | double[12] | 孔相對畫面準心的上下角度，往上為正 |
+| `latency_ms` | double | 拍照到發布的時間（毫秒）。roboRIO 可用「收到時間 − latency_ms」對齊當時的里程計／仰角（Java 端目前還沒用） |
 | `enable` | bool | **roboRIO → Orin**。false = Orin 不拍照、不跑辨識。自主開場移動時關閉，到定點才開；沒人發布時預設 true |
 
 ## 自主開場（robot_code：`AutoDrive` + `RobotContainer.autoShootCommand`）
@@ -74,9 +76,15 @@ NVIDIA 已下架 JetPack 6.0 版的 GPU PyTorch，RobotPy 也沒有 Python 3.10 
 | Ultralytics + GPU PyTorch 推論 | `trt_seg.py`：TensorRT engine 直接推論，前後處理照 Ultralytics（已用 30 張照片比對：孔數、格子、亮燈全部一致，角度差 < 0.3°） |
 | pyntcore | `nt4_lite.py`：純 Python NT4 客戶端（websocket-client + msgpack），topic 名稱與型別相同 |
 
-Orin 上的檔案都在 `~/vision/`：`vision_node.py`、`trt_seg.py`、`nt4_lite.py`、`best.onnx`、`best.engine`、`best.json`（類別名稱）、`run_vision.sh`、
+Orin 上的檔案都在 `~/vision/`：`vision_node.py`、`trt_seg.py`、`nt4_lite.py`、`calibration.json`、`best.onnx`、`best.engine`、`best.json`（類別名稱）、`run_vision.sh`、
 `trt_py/`（NVIDIA 官方 `python3-libnvinfer_8.6.2.3-1+cuda12.2_arm64.deb` 用 `dpkg-deb -x` 解開，不用 sudo）。
-Python 套件用 `pip install --user --no-index` 從筆電下載好的 wheel 安裝（numpy 1.26.4、opencv-python 4.10、websocket-client、msgpack）。
+Python 套件用 `pip install --user --no-index` 從筆電下載好的 wheel 安裝（清單在 `orin/requirements-orin.txt`）。
+
+- **相機校正值**（焦距 `fx`、距離修正 `dist_scale`／`dist_offset`）放在 `orin/calibration.json`，換相機或重新校正改這個檔即可，
+  不用改程式；命令列的 `--fx`、`--dist-scale` 等仍可暫時覆蓋。檔案不存在時用程式內建的預設值（和目前的檔案相同）。
+- **log 輪替**：`run_vision.sh` 啟動時若 `vision.log` 超過 20 MB，會把舊內容存成 `vision.log.1` 再清空。
+- **取像執行緒**：USB 相機在另一條執行緒持續讀取，辨識永遠拿最新一幀；仰角讀數也在拍照當下讀，排號判斷用的仰角和畫面同步。
+- **MJPEG 串流**先縮到 640 寬再編碼（`--mjpeg-width`，0 = 原尺寸）。
 
 - 重建 engine（換模型時）：在筆電 `yolo export model=best.pt format=onnx imgsz=640 opset=17 simplify=True`，把 `best.onnx` 複製到 Orin，
   `/usr/src/tensorrt/bin/trtexec --onnx=best.onnx --saveEngine=best.engine --fp16`（實測 GPU 約 5.6 ms／幀）。
